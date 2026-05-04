@@ -1,0 +1,257 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Users ────────────────────────────────────────────────────────────────────
+
+model User {
+  id                String   @id @default(uuid())
+  email             String   @unique
+  passwordHash      String
+  fullName          String
+  preferredLanguage String   @default("English")
+  profilePhotoUrl   String?
+  city              String?
+  state             String?
+  isSuspended       Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  consultations  Consultation[]  @relation("ClientConsultations")
+  ratings        Rating[]        @relation("UserRatings")
+  deviceSessions DeviceSession[] @relation("UserDeviceSessions")
+  refreshTokens  RefreshToken[]  @relation("UserRefreshTokens")
+}
+
+// ─── Lawyers ──────────────────────────────────────────────────────────────────
+
+model Lawyer {
+  id                 String             @id @default(uuid())
+  email              String             @unique
+  passwordHash       String
+  fullName           String
+  preferredLanguage  String             @default("English")
+  profilePhotoUrl    String?
+  bio                String?
+  yearsExperience    Int                @default(0)
+  languagesSpoken    String[]           @default([])
+  city               String?
+  state              String?
+  verificationStatus VerificationStatus @default(PENDING_UPLOAD)
+  licenseData        Bytes?
+  licenseFileMime    String?
+  licenseNumber      String?
+  rejectionReason    String?
+  isOnline           Boolean            @default(false)
+  lastHeartbeatAt    DateTime?
+  avgRating          Float              @default(0)
+  totalRatings       Int                @default(0)
+  totalConsultations Int                @default(0)
+  isSuspended        Boolean            @default(false)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  consultations  Consultation[]   @relation("LawyerConsultations")
+  ratings        Rating[]         @relation("LawyerRatings")
+  specialties    LawyerSpecialty[]
+  deviceSessions DeviceSession[]  @relation("LawyerDeviceSessions")
+  refreshTokens  RefreshToken[]   @relation("LawyerRefreshTokens")
+
+  @@index([verificationStatus])
+  @@index([isOnline])
+  @@index([city, state])
+}
+
+// ─── Admins ───────────────────────────────────────────────────────────────────
+
+model Admin {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String
+  fullName     String
+  isSuperAdmin Boolean    @default(false)
+  isActive     Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  auditLogs    AuditLog[]
+  refreshTokens RefreshToken[] @relation("AdminRefreshTokens")
+}
+
+// ─── Specialties ──────────────────────────────────────────────────────────────
+
+model Specialty {
+  id   String @id @default(uuid())
+  name String @unique
+
+  lawyers LawyerSpecialty[]
+}
+
+model LawyerSpecialty {
+  lawyerId    String
+  specialtyId String
+
+  lawyer    Lawyer    @relation(fields: [lawyerId], references: [id], onDelete: Cascade)
+  specialty Specialty @relation(fields: [specialtyId], references: [id], onDelete: Cascade)
+
+  @@id([lawyerId, specialtyId])
+  @@index([specialtyId])
+}
+
+// ─── Device sessions ──────────────────────────────────────────────────────────
+
+model DeviceSession {
+  id         String          @id @default(uuid())
+  userId     String?
+  lawyerId   String?
+  adminId    String?
+  deviceId   String
+  fcmToken   String?
+  role       ParticipantRole
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  user   User?   @relation("UserDeviceSessions", fields: [userId], references: [id], onDelete: Cascade)
+  lawyer Lawyer? @relation("LawyerDeviceSessions", fields: [lawyerId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId])
+  @@unique([lawyerId, deviceId])
+}
+
+// ─── Refresh tokens (allow-list) ──────────────────────────────────────────────
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String?
+  lawyerId  String?
+  adminId   String?
+  deviceId  String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user   User?  @relation("UserRefreshTokens", fields: [userId], references: [id], onDelete: Cascade)
+  lawyer Lawyer? @relation("LawyerRefreshTokens", fields: [lawyerId], references: [id], onDelete: Cascade)
+  admin  Admin?  @relation("AdminRefreshTokens", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([lawyerId])
+  @@index([adminId])
+}
+
+// ─── Consultations ────────────────────────────────────────────────────────────
+
+model Consultation {
+  id               String             @id @default(uuid())
+  userId           String
+  lawyerId         String
+  type             ConsultationType
+  status           ConsultationStatus @default(RINGING)
+  paymentStatus    PaymentStatus      @default(FREE)
+  amountPaise      Int                @default(0)
+  startedAt        DateTime           @default(now())
+  endedAt          DateTime?
+  durationSeconds  Int?
+  agoraChannelName String?
+
+  user   User   @relation("ClientConsultations", fields: [userId], references: [id], onDelete: Cascade)
+  lawyer Lawyer @relation("LawyerConsultations", fields: [lawyerId], references: [id], onDelete: Cascade)
+  rating Rating?
+
+  @@index([userId, startedAt(sort: Desc)])
+  @@index([lawyerId, startedAt(sort: Desc)])
+  @@index([status])
+}
+
+// ─── Pending messages (offline delivery queue) ────────────────────────────────
+
+model PendingMessage {
+  id              String          @id @default(uuid())
+  senderUserId    String?
+  senderLawyerId  String?
+  recipientUserId String?
+  recipientLawyerId String?
+  payload         Json
+  createdAt       DateTime        @default(now())
+
+  @@index([recipientUserId, createdAt])
+  @@index([recipientLawyerId, createdAt])
+}
+
+// ─── Ratings ──────────────────────────────────────────────────────────────────
+
+model Rating {
+  id             String   @id @default(uuid())
+  consultationId String   @unique
+  userId         String
+  lawyerId       String
+  stars          Int
+  reviewText     String?
+  createdAt      DateTime @default(now())
+
+  consultation Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  user         User         @relation("UserRatings", fields: [userId], references: [id], onDelete: Cascade)
+  lawyer       Lawyer       @relation("LawyerRatings", fields: [lawyerId], references: [id], onDelete: Cascade)
+
+  @@index([lawyerId])
+}
+
+// ─── Audit logs ───────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  adminId      String
+  action       String
+  targetType   String?
+  targetId     String?
+  notes        String?
+  createdAt    DateTime @default(now())
+
+  admin Admin @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([targetId, targetType])
+  @@index([createdAt(sort: Desc)])
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum VerificationStatus {
+  PENDING_UPLOAD
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum ConsultationType {
+  CHAT
+  VOICE
+  VIDEO
+}
+
+enum ConsultationStatus {
+  RINGING
+  ACTIVE
+  ENDED
+  MISSED
+  REJECTED_BY_LAWYER
+  DROPPED
+}
+
+enum PaymentStatus {
+  FREE
+  PENDING
+  PAID
+  REFUNDED
+}
+
+enum ParticipantRole {
+  USER
+  LAWYER
+  ADMIN
+}

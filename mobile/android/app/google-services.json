@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "703344031887",
+    "project_id": "jerry-4f2c5",
+    "storage_bucket": "jerry-4f2c5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:703344031887:android:3a315b73d3ff2a45d898fa",
+        "android_client_info": {
+          "package_name": "in.jerry.jerry_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAEfba33ia9LvCozD5FUW49gQ0myMOrIYw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

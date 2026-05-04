@@ -1,0 +1,82 @@
+
+claude R&D prompt -----------------------------
+
+i have new flutter project , 
+Project name : -------- jerry
+it will be scalable and can handle million of user at a time . 
+
+Four apps i.e. login lawyer , User , MainAdmin which can see user and the laywer
+in which  User ,  and  are lawyer can interact
+
+database: postgresql
+
+
+UI -A high-fidelity desktop UI/UX design for a modern enterprise workforce tool, combining Bento Grid Layout and Calm UI principles. The interface features a 'Project Dashboard' with rounded modular cards of varying sizes showing sprint progress, team activity, and data visualizations. Aesthetic is 'Calm UI' with a muted professional palette (slate grays, soft blues, and sage greens), generous whitespace, and subtle soft shadows instead of harsh dividers. Layout includes a sleek, collapsible left sidebar and a 'Glassmorphism' translucent detail panel on the right. 4k resolution, clean typography, minimalist icons, professional SaaS product interface.
+UI has its own identities with better animation and design and it should be User and friendly and Support all screen sizes as mobile, pc , tablet ,etc
+
+
+
+AIM: 
+It is a app in which lawyer and the client can join with each other and interact like chat , call , videocall ok 
+
+MainLogin 
+It should login and signup panel for user with basic functionalities should have in real world website , user can login via email & password and Signup form with users details also with role selection like user or laywer and  verify via email OTP to create account , 
+
+only the lawyer application to go to admin panel to for approval to that user role then after admin after approve , lawyer can login with their credentials. 
+                               
+
+
+User 
+user can create and signup directly and he can see the lawyer taht is  available can can talk with the anything he want . 
+in case of emergency he can contact with his lawyer anytime he want 
+
+
+
+2. lawyer upload license id for verification and send to the admin page after verification he can login as a lawyer. and same video call and messages and see the client like in WhatsApp . 
+all should be done be PostgreSQL database, uploading the images as binary number , and save to the database . 
+
+
+
+Admin --
+all the feature all user role , lawyer because he is admin with also their own functionalties as admin
+admin page will verify the lawyer ,
+
+main feature - texting , calling , vide call all the feature will be there between the lawyer and the client. 
+
+
+
+and want to R&D of this each and every thing and after R&D  when i told to give md of then you give me file each document one by one after checking each file i.e. Architecture.md
+MVP-Tech-Doc.md 
+PRD.md 
+Design.md
+
+, other wise do not code  it should as reference for better i can i give it cursor ai to implementation guide it easily build  and only chat discuss with you
+
+-------------------------------------------------------------
+
+Cursor Agent prompt -----------------------------------------
+
+I have these four files of my project Documentation folder, read and understand each and every thing 
+Architecture.md
+MVP-Tech-Doc.md 
+PRD.md 
+Design.md
+and then Create a full implementation md file for my project in these types of 12 files in Implementation folder one by one , ask me to next each file i.e.
+01-product-requirements.md 
+02-user-stories-and-acceptance-criteria.md
+03-information-architecture.md
+04-system-architecture.md 
+05-database-schema.md 
+06-api-contracts.md 
+07-monorepo-structure.md 
+08-scoring-engine-spec.md 
+09-engineering-scope-definition.md 
+10-development-phases.md 
+11-environment-and-devops.md 
+12-testing-strategy.md
+
+--------------------------------
+
+
+@Documentation/Implementation read all Implementation file from it , and understand each and every thing, save in your context and make a plan then ask me to start Implementation
+
