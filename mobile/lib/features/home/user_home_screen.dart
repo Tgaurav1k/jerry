@@ -37,7 +37,7 @@ class UserDiscoverTabState extends ConsumerState<UserDiscoverTab> {
     setState(() { _loading = true; _error = null; });
     try {
       final resp = await ref.read(apiClientProvider).get('/lawyers');
-      final list = (resp['data'] as List<dynamic>? ?? []);
+      final list = (resp['data']['items'] as List<dynamic>? ?? []);
       _items = list.map((e) => LawyerSummary.fromJson(e as Map<String, dynamic>)).toList();
     } catch (e) {
       _error = '$e';
