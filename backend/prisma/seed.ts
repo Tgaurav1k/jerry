@@ -53,8 +53,8 @@ async function main() {
   });
   console.log(`Seed: SuperAdmin ready — ${saEmail}`);
 
-  // ─── Demo users (dev only) ────────────────────────────────────────────────
-  if (process.env.NODE_ENV !== 'production') {
+  // ─── Demo users ───────────────────────────────────────────────────────────
+  if (true) {
     const demoUserPass = process.env.DEMO_USER_PASSWORD ?? 'DemoUser@123';
     const demoLawyerPass = process.env.DEMO_LAWYER_PASSWORD ?? 'DemoLawyer@123';
     const userEmail = process.env.DEMO_USER_EMAIL ?? 'demo.user@jerry.dev';
