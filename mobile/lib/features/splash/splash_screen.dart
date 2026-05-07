@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:jerry_app/core/network/api_client.dart';
+import 'package:jerry_app/core/notifications/notification_service.dart';
 import 'package:jerry_app/core/theme/app_colors.dart';
 import 'package:jerry_app/features/admin/admin_shell_screen.dart';
 import 'package:jerry_app/features/auth/license_upload_screen.dart';
@@ -31,6 +32,17 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
     });
   }
 
+  Future<void> _registerFcm() async {
+    try {
+      final storage  = ref.read(tokenStorageProvider);
+      final fcmToken = await NotificationService.getFcmToken();
+      if (fcmToken == null) return;
+      final deviceId = await storage.getOrCreateDeviceId();
+      await ref.read(apiClientProvider).post('/users/me/fcm',
+          data: {'fcmToken': fcmToken, 'deviceId': deviceId});
+    } catch (_) {}
+  }
+
   Future<void> _navigate() async {
     final storage = ref.read(tokenStorageProvider);
     final token   = await storage.getAccessToken();
@@ -40,6 +52,8 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
       if (mounted) context.go(WelcomeScreen.routePath);
       return;
     }
+
+    _registerFcm();
 
     if (role == 'ADMIN') {
       if (mounted) context.go(AdminShellScreen.routePath);

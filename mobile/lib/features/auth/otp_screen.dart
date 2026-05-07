@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:jerry_app/core/network/api_client.dart';
+import 'package:jerry_app/core/notifications/notification_service.dart';
 import 'package:jerry_app/core/theme/app_colors.dart';
 import 'package:jerry_app/features/auth/license_upload_screen.dart';
 import 'package:jerry_app/features/shell/user_shell_screen.dart';
@@ -118,6 +119,16 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
         role:         role,
         userId:       userId,
       );
+
+      // Register FCM token now that we have credentials
+      NotificationService.getFcmToken().then((fcmToken) async {
+        if (fcmToken == null) return;
+        final deviceId = await storage.getOrCreateDeviceId();
+        try {
+          await ref.read(apiClientProvider).post('/users/me/fcm',
+              data: {'fcmToken': fcmToken, 'deviceId': deviceId});
+        } catch (_) {}
+      });
 
       if (!mounted) return;
       if (role == 'LAWYER') {

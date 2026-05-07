@@ -14,30 +14,42 @@ class ChatMessage {
     required this.content,
     required this.createdAt,
     this.status = 'sent',
+    this.type = 'text',
+    this.callType,
+    this.callStatus,
+    this.callDurationSeconds,
   });
 
-  final String id;
-  final String threadId;
-  final String senderId;
-  final String senderRole;
-  final String recipientId;
-  final String recipientRole;
-  final String content;
+  final String   id;
+  final String   threadId;
+  final String   senderId;
+  final String   senderRole;
+  final String   recipientId;
+  final String   recipientRole;
+  final String   content;
   final DateTime createdAt;
   String status;
+  final String   type;               // 'text' | 'call'
+  final String?  callType;           // 'VIDEO' | 'VOICE'
+  final String?  callStatus;         // 'completed' | 'missed' | 'declined'
+  final int?     callDurationSeconds;
 
   bool get isLocal => id.startsWith('local-');
 
   factory ChatMessage.fromMap(Map<String, dynamic> m) => ChatMessage(
-        id:            m['id'] as String,
-        threadId:      m['threadId'] as String,
-        senderId:      m['senderId'] as String,
-        senderRole:    m['senderRole'] as String,
-        recipientId:   m['recipientId'] as String,
-        recipientRole: m['recipientRole'] as String,
-        content:       m['content'] as String,
-        createdAt:     DateTime.tryParse(m['createdAt'] as String? ?? '') ?? DateTime.now(),
-        status:        m['status'] as String? ?? 'sent',
+        id:                   m['id'] as String,
+        threadId:             m['threadId'] as String,
+        senderId:             m['senderId'] as String,
+        senderRole:           m['senderRole'] as String,
+        recipientId:          m['recipientId'] as String,
+        recipientRole:        m['recipientRole'] as String,
+        content:              m['content'] as String,
+        createdAt:            DateTime.tryParse(m['createdAt'] as String? ?? '') ?? DateTime.now(),
+        status:               m['status'] as String? ?? 'sent',
+        type:                 m['type'] as String? ?? 'text',
+        callType:             m['callType'] as String?,
+        callStatus:           m['callStatus'] as String?,
+        callDurationSeconds:  (m['callDurationSeconds'] as num?)?.toInt(),
       );
 }
 
@@ -83,16 +95,23 @@ class ChatState {
 // ── Notifier ──────────────────────────────────────────────────────
 
 class ChatNotifier extends StateNotifier<ChatState> {
-  ChatNotifier(this._socket, this._storage) : super(const ChatState()) {
+  ChatNotifier(this._socket, this._storage, this._api) : super(const ChatState()) {
     _init();
   }
 
   final SocketService _socket;
   final TokenStorage  _storage;
+  final ApiClient     _api;
   String? _myId;
 
   static String computeThreadId(String a, String b) =>
       a.compareTo(b) < 0 ? '$a:$b' : '$b:$a';
+
+  final Map<String, Map<String, String>> _activeCalls = {};
+
+  void trackCall(String consultationId, String threadId, String callType) {
+    _activeCalls[consultationId] = {'threadId': threadId, 'callType': callType};
+  }
 
   Future<void> _init() async {
     _myId = await _storage.getUserId();
@@ -100,6 +119,111 @@ class ChatNotifier extends StateNotifier<ChatState> {
     sock.on('chat:message',  _onMessage);
     sock.on('chat:sent',     _onSent);
     sock.on('chat:read_ack', _onReadAck);
+    sock.on('call:ended',    _onCallEnded);
+    sock.on('call:rejected', _onCallRejected);
+    // Restore conversations from server on startup
+    if (_myId != null && _myId!.isNotEmpty) {
+      await loadThreads();
+    }
+  }
+
+  Future<void> loadThreads() async {
+    try {
+      final resp = await _api.get('/chat/threads');
+      final list = resp is List ? resp : (resp['data'] as List<dynamic>? ?? []);
+      if (list.isEmpty) return;
+
+      final threads = Map<String, ChatThread>.from(state.threads);
+      for (final raw in list) {
+        final m            = raw as Map<String, dynamic>;
+        final threadId     = m['threadId']     as String;
+        final peerId       = m['peerId']       as String? ?? '';
+        final peerRole     = m['peerRole']     as String? ?? 'LAWYER';
+        final peerName     = m['peerName']     as String? ?? '';
+        if (peerId.isEmpty) continue;
+
+        // Last message preview
+        final lastMsg = ChatMessage.fromMap(m);
+
+        final existing = threads[threadId];
+        if (existing == null) {
+          threads[threadId] = ChatThread(
+            threadId: threadId,
+            peerId:   peerId,
+            peerRole: peerRole,
+            peerName: peerName,
+            messages: [lastMsg],
+          );
+        } else {
+          // Update peer name (in case it was empty), keep existing messages
+          final hasMsg = existing.messages.any((x) => x.id == lastMsg.id);
+          threads[threadId] = existing.copyWith(
+            peerName: peerName.isNotEmpty ? peerName : existing.peerName,
+            messages: hasMsg ? existing.messages : [lastMsg, ...existing.messages],
+          );
+        }
+      }
+      state = state.copyWith(threads);
+    } catch (_) {}
+  }
+
+  void _onCallEnded(dynamic raw) {
+    final data           = Map<String, dynamic>.from(raw as Map);
+    final consultationId = data['consultationId'] as String;
+    final duration       = (data['durationSeconds'] as num?)?.toInt() ?? 0;
+    final callInfo       = _activeCalls.remove(consultationId);
+    if (callInfo == null) return;
+    _addCallBubble(
+      threadId:        callInfo['threadId']!,
+      callType:        callInfo['callType']!,
+      status:          duration > 0 ? 'completed' : 'missed',
+      durationSeconds: duration,
+    );
+  }
+
+  void _onCallRejected(dynamic raw) {
+    final data           = Map<String, dynamic>.from(raw as Map);
+    final consultationId = data['consultationId'] as String;
+    final callInfo       = _activeCalls.remove(consultationId);
+    if (callInfo == null) return;
+    _addCallBubble(
+      threadId:        callInfo['threadId']!,
+      callType:        callInfo['callType']!,
+      status:          'declined',
+      durationSeconds: 0,
+    );
+  }
+
+  void addMissedCallBubble({required String threadId, required String callType}) {
+    _addCallBubble(threadId: threadId, callType: callType, status: 'missed', durationSeconds: 0);
+  }
+
+  void _addCallBubble({
+    required String threadId,
+    required String callType,
+    required String status,
+    required int    durationSeconds,
+  }) {
+    final threads = Map<String, ChatThread>.from(state.threads);
+    final thread  = threads[threadId];
+    if (thread == null) return;
+    final msg = ChatMessage(
+      id:                  'call-${DateTime.now().microsecondsSinceEpoch}',
+      threadId:            threadId,
+      senderId:            _myId ?? '',
+      senderRole:          thread.peerRole == 'LAWYER' ? 'USER' : 'LAWYER',
+      recipientId:         thread.peerId,
+      recipientRole:       thread.peerRole,
+      content:             '',
+      createdAt:           DateTime.now(),
+      status:              'sent',
+      type:                'call',
+      callType:            callType,
+      callStatus:          status,
+      callDurationSeconds: durationSeconds,
+    );
+    threads[threadId] = thread.copyWith(messages: [...thread.messages, msg]);
+    state = state.copyWith(threads);
   }
 
   void _onMessage(dynamic raw) {
@@ -238,6 +362,24 @@ class ChatNotifier extends StateNotifier<ChatState> {
     state = state.copyWith(threads);
   }
 
+  Future<void> loadHistory(String threadId) async {
+    try {
+      final resp = await _api.get('/chat/history', params: {'threadId': threadId, 'limit': '100'});
+      final list = resp is List ? resp : (resp['data'] as List<dynamic>? ?? []);
+      final msgs = list.map((e) => ChatMessage.fromMap(e as Map<String, dynamic>)).toList();
+      if (msgs.isEmpty) return;
+      final threads = Map<String, ChatThread>.from(state.threads);
+      final thread  = threads[threadId];
+      if (thread == null) return;
+      // Merge: keep local optimistic messages, prepend history
+      final existingIds = thread.messages.map((m) => m.id).toSet();
+      final newMsgs = msgs.where((m) => !existingIds.contains(m.id)).toList();
+      if (newMsgs.isEmpty) return;
+      threads[threadId] = thread.copyWith(messages: [...newMsgs, ...thread.messages]);
+      state = state.copyWith(threads);
+    } catch (_) {}
+  }
+
   List<ChatMessage> messagesFor(String threadId) =>
       state.threads[threadId]?.messages ?? [];
 
@@ -246,6 +388,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
     _socket.socket?.off('chat:message');
     _socket.socket?.off('chat:sent');
     _socket.socket?.off('chat:read_ack');
+    _socket.socket?.off('call:ended');
+    _socket.socket?.off('call:rejected');
     super.dispose();
   }
 }
@@ -253,5 +397,6 @@ class ChatNotifier extends StateNotifier<ChatState> {
 final chatProvider = StateNotifierProvider<ChatNotifier, ChatState>((ref) {
   final socket  = ref.watch(socketServiceProvider);
   final storage = ref.watch(tokenStorageProvider);
-  return ChatNotifier(socket, storage);
+  final api     = ref.watch(apiClientProvider);
+  return ChatNotifier(socket, storage, api);
 });

@@ -77,15 +77,18 @@ class _LawyerDetailScreenState extends ConsumerState<LawyerDetailScreen> {
       );
 
       if (!mounted) return;
-      final stars = await RatingModal.show(
+      final result = await RatingModal.show(
         context,
         lawyerName:     widget.lawyer.fullName,
         consultationId: consultationId,
       );
 
-      if (stars != null && stars > 0 && mounted) {
+      if (result != null && result.stars > 0 && mounted) {
         try {
-          await api.post('/ratings/consultations/$consultationId', data: {'stars': stars});
+          await api.post('/ratings/consultations/$consultationId', data: {
+            'stars': result.stars,
+            if (result.reviewText != null) 'reviewText': result.reviewText,
+          });
         } catch (_) {}
       }
     } on DioException catch (e) {

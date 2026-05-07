@@ -12,6 +12,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import type { JwtPayload } from '../auth/jwt.strategy';
+import { NotificationService } from '../notification/notification.service';
 import { ChatService } from './chat.service';
 
 @Injectable()
@@ -28,6 +29,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly chat: ChatService,
+    private readonly notifications: NotificationService,
   ) {}
 
   async handleConnection(client: Socket) {
@@ -80,7 +82,14 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     },
   ) {
     const sender = client.data.user as JwtPayload;
-    const result = await this.chat.send(sender, payload);
+    let result;
+    try {
+      result = await this.chat.send(sender, payload);
+    } catch (err) {
+      console.error('[chat:send] persist failed', err);
+      client.emit('chat:error', { messageId: payload.messageId, error: 'send_failed' });
+      return;
+    }
 
     // Echo delivery confirmation to sender
     client.emit('chat:sent', { messageId: payload.messageId, status: 'delivered' });
@@ -94,6 +103,18 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       ...result,
       messageId: payload.messageId,
     });
+
+    // Push notification (fires when recipient has app in background)
+    const preview = payload.content.length > 60
+      ? `${payload.content.slice(0, 60)}…`
+      : payload.content;
+    if (payload.recipientRole === 'LAWYER') {
+      this.notifications.sendToLawyer(payload.recipientId, 'New Message', preview,
+        { type: 'chat:message', threadId: payload.threadId }).catch(() => {});
+    } else {
+      this.notifications.sendToUser(payload.recipientId, 'New Message', preview,
+        { type: 'chat:message', threadId: payload.threadId }).catch(() => {});
+    }
   }
 
   // ─── client → server: typing indicator ────────────────────────────────────

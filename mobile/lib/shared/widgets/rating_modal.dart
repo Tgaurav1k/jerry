@@ -6,14 +6,20 @@ import 'package:jerry_app/core/theme/app_colors.dart';
 /// Post-call rating bottom sheet.
 /// Usage:
 ///   final stars = await RatingModal.show(context, lawyerName: 'Meera Kapoor', consultationId: 'xxx');
+class RatingResult {
+  const RatingResult({required this.stars, this.reviewText});
+  final int     stars;
+  final String? reviewText;
+}
+
 class RatingModal extends StatefulWidget {
   const RatingModal({super.key, required this.lawyerName, required this.consultationId});
 
   final String lawyerName;
   final String consultationId;
 
-  static Future<int?> show(BuildContext context, {required String lawyerName, required String consultationId}) {
-    return showModalBottomSheet<int>(
+  static Future<RatingResult?> show(BuildContext context, {required String lawyerName, required String consultationId}) {
+    return showModalBottomSheet<RatingResult>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -161,7 +167,12 @@ class _RatingModalState extends State<RatingModal> {
                       Expanded(
                         flex: 2,
                         child: ElevatedButton.icon(
-                          onPressed: canSubmit ? () => Navigator.of(context).pop(_stars) : null,
+                          onPressed: canSubmit ? () => Navigator.of(context).pop(
+                            RatingResult(
+                              stars: _stars,
+                              reviewText: _review.text.trim().isEmpty ? null : _review.text.trim(),
+                            ),
+                          ) : null,
                           icon: const Icon(LucideIcons.check, size: 16),
                           label: const Text('Submit'),
                         ),

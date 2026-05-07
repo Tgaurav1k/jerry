@@ -8,6 +8,8 @@ import { ConsultationStatus, ConsultationType } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import type { JwtPayload } from '../auth/jwt.strategy';
 import { ChatGateway } from '../chat/chat.gateway';
+import { ChatService } from '../chat/chat.service';
+import { NotificationService } from '../notification/notification.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AgoraService } from './agora.service';
 import { agoraUidFromString } from './agora.util';
@@ -21,6 +23,8 @@ export class CallService {
     private readonly prisma: PrismaService,
     private readonly agora: AgoraService,
     private readonly gateway: ChatGateway,
+    private readonly chat: ChatService,
+    private readonly notifications: NotificationService,
   ) {}
 
   async initiate(user: JwtPayload, lawyerId: string, type: 'VIDEO' | 'VOICE') {
@@ -30,18 +34,29 @@ export class CallService {
     if (!lawyer || lawyer.isSuspended || lawyer.verificationStatus !== 'APPROVED') {
       throw new NotFoundException('Lawyer not found');
     }
-    if (!lawyer.isOnline) {
-      throw new ConflictException('Lawyer offline');
-    }
-    if (this.busy.has(lawyerId)) {
-      throw new ConflictException('Lawyer busy');
+    const consultationType: ConsultationType = type === 'VIDEO' ? 'VIDEO' : 'VOICE';
+    const client = await this.prisma.user.findUnique({ where: { id: user.sub } });
+    const callerName = client?.fullName ?? 'Client';
+
+    // Lawyer is offline or already in a call — record missed call and return immediately
+    if (!lawyer.isOnline || this.busy.has(lawyerId)) {
+      const row = await this.prisma.consultation.create({
+        data: {
+          userId: user.sub,
+          lawyerId,
+          type: consultationType,
+          status: ConsultationStatus.MISSED,
+        },
+      });
+      await this.chat.saveMissedCall(user.sub, lawyerId, row.id, type);
+      return {
+        success: true,
+        data: { consultationId: row.id, missed: true },
+        meta: { timestamp: new Date().toISOString() },
+      };
     }
 
     const channelName = `consult_${randomUUID()}`;
-    const consultationType: ConsultationType = type === 'VIDEO' ? 'VIDEO' : 'VOICE';
-
-    const client = await this.prisma.user.findUnique({ where: { id: user.sub } });
-    const callerName = client?.fullName ?? 'Client';
 
     const row = await this.prisma.consultation.create({
       data: {
@@ -62,13 +77,22 @@ export class CallService {
 
     this.gateway.emitToLawyer(lawyerId, 'call:incoming', {
       consultationId: row.id,
+      callerId:       user.sub,
       channelName,
-      token: lawyerToken,
-      uid: lawyerUid,
+      token:          lawyerToken,
+      uid:            lawyerUid,
       callerName,
       callerPhotoUrl: client?.profilePhotoUrl ?? null,
-      type: consultationType,
+      type:           consultationType,
     });
+
+    // Push notification for lawyer (in case app is in background)
+    this.notifications.sendToLawyer(
+      lawyerId,
+      `📞 Incoming ${type === 'VIDEO' ? 'Video' : 'Voice'} Call`,
+      `${callerName} is calling you`,
+      { type: 'call:incoming', consultationId: row.id },
+    ).catch(() => {});
 
     return {
       success: true,
@@ -130,6 +154,14 @@ export class CallService {
     });
 
     this.busy.delete(c.lawyerId);
+
+    // Persist declined record so caller sees it in history after restart
+    await this.chat.saveCallRecord(
+      c.userId, c.lawyerId, consultationId,
+      c.type as 'VIDEO' | 'VOICE',
+      'declined', 0,
+    ).catch(() => {});
+
     this.gateway.emitToUser(c.userId, 'call:rejected', { consultationId });
 
     return {
@@ -162,6 +194,14 @@ export class CallService {
     });
 
     this.busy.delete(c.lawyerId);
+
+    // Persist call record so both parties see it in history after restart
+    await this.chat.saveCallRecord(
+      c.userId, c.lawyerId, consultationId,
+      c.type as 'VIDEO' | 'VOICE',
+      durationSeconds > 0 ? 'completed' : 'missed',
+      durationSeconds,
+    ).catch(() => {});
 
     const endedPayload = { consultationId, durationSeconds };
     this.gateway.emitToUser(c.userId, 'call:ended', endedPayload);

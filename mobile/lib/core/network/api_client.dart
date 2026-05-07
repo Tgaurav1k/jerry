@@ -39,6 +39,15 @@ class TokenStorage {
   Future<void> saveDeviceId(String deviceId) =>
       _store.write(key: _deviceIdKey, value: deviceId);
 
+  Future<String> getOrCreateDeviceId() async {
+    final existing = await getDeviceId();
+    if (existing != null && existing.isNotEmpty) return existing;
+    // Generate a stable UUID for this device install
+    final newId = '${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}-${(DateTime.now().hashCode ^ 0xDEADBEEF).toRadixString(36)}';
+    await saveDeviceId(newId);
+    return newId;
+  }
+
   Future<void> clear() => _store.deleteAll();
 
   Future<bool> isLoggedIn() async {

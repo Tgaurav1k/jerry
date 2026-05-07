@@ -5,6 +5,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:jerry_app/core/network/api_client.dart';
 import 'package:jerry_app/core/theme/app_colors.dart';
 import 'package:jerry_app/features/call/video_call_screen.dart';
+import 'package:jerry_app/features/chat/chat_provider.dart';
 import 'package:jerry_app/features/chat/chats_list_screen.dart';
 import 'package:jerry_app/features/home/history_placeholder_screen.dart';
 import 'package:jerry_app/features/home/lawyer_home_screen.dart';
@@ -68,10 +69,11 @@ class _LawyerShellScreenState extends ConsumerState<LawyerShellScreen> {
     if (!mounted) return;
 
     final consultationId = data['consultationId'] as String;
-    final callType       = data['type'] as String? ?? 'VIDEO';
-    final callerName     = data['callerName'] as String? ?? 'Client';
-    final channelName    = data['channelName'] as String? ?? '';
-    final agoraToken     = data['token'] as String? ?? '';
+    final callerId       = data['callerId']       as String? ?? '';
+    final callType       = data['type']           as String? ?? 'VIDEO';
+    final callerName     = data['callerName']     as String? ?? 'Client';
+    final channelName    = data['channelName']    as String? ?? '';
+    final agoraToken     = data['token']          as String? ?? '';
     final uid            = (data['uid'] as num?)?.toInt() ?? 0;
 
     await Navigator.of(context).push<void>(
@@ -95,6 +97,21 @@ class _LawyerShellScreenState extends ConsumerState<LawyerShellScreen> {
               final d2 = resp['data'] as Map<String, dynamic>;
 
               if (!mounted) return;
+
+              // Ensure thread + track call so call:ended injects a bubble
+              if (callerId.isNotEmpty) {
+                final myId = await ref.read(tokenStorageProvider).getUserId() ?? '';
+                if (!mounted) return;
+                final threadId = ChatNotifier.computeThreadId(myId, callerId);
+                ref.read(chatProvider.notifier).ensureThread(
+                  threadId: threadId,
+                  peerId:   callerId,
+                  peerRole: 'USER',
+                  peerName: callerName,
+                );
+                ref.read(chatProvider.notifier).trackCall(consultationId, threadId, callType);
+              }
+
               await context.push(
                 VideoCallScreen.routePath,
                 extra: VideoCallArgs(
@@ -102,6 +119,8 @@ class _LawyerShellScreenState extends ConsumerState<LawyerShellScreen> {
                   channelId:      d2['agoraChannelName'] as String? ?? channelName,
                   token:          d2['agoraToken'] as String? ?? agoraToken,
                   uid:            (d2['uid'] as num?)?.toInt() ?? uid,
+                  callType:       callType,
+                  peerName:       callerName,
                 ),
               );
             } catch (e) {

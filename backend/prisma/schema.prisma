@@ -169,6 +169,27 @@ model Consultation {
   @@index([status])
 }
 
+// ─── Chat message history ─────────────────────────────────────────────────────
+
+model ChatMessage {
+  id                  String   @id
+  threadId            String
+  senderId            String
+  senderRole          String
+  recipientId         String
+  recipientRole       String
+  content             String
+  type                String   @default("text")
+  callType            String?
+  callStatus          String?
+  callDurationSeconds Int?
+  createdAt           DateTime @default(now())
+
+  @@index([threadId, createdAt(sort: Desc)])
+  @@index([senderId, createdAt(sort: Desc)])
+  @@index([recipientId, createdAt(sort: Desc)])
+}
+
 // ─── Pending messages (offline delivery queue) ────────────────────────────────
 
 model PendingMessage {

@@ -11,6 +11,8 @@ import {
 import { IsEmail, IsInt, IsOptional, IsString, Min, MinLength } from 'class-validator';
 import { Type } from 'class-transformer';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { Roles } from '../auth/roles.decorator';
+import { RolesGuard } from '../auth/roles.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { JwtPayload } from '../auth/jwt.strategy';
 import { AdminService } from './admin.service';
@@ -35,7 +37,8 @@ class PageQueryDto {
 }
 
 @Controller('admin')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('ADMIN')
 export class AdminController {
   constructor(private readonly svc: AdminService) {}
 

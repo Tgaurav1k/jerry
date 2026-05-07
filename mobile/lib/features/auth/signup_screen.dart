@@ -167,6 +167,26 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
             Expanded(child: _AppField(hint: 'Maharashtra', label: 'State',
                 onChanged: (v) => _state = v)),
           ]),
+          if (_role == 'LAWYER') ...[
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.outlineVariant),
+              ),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('What happens next',
+                    style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.onSurface)),
+                const SizedBox(height: 10),
+                _StepRow(number: '1', text: 'Verify your email with OTP'),
+                _StepRow(number: '2', text: 'Upload your Bar Council license & ID'),
+                _StepRow(number: '3', text: 'Admin reviews your credentials (24–48 hrs)'),
+                _StepRow(number: '4', text: 'Start accepting client consultations'),
+              ]),
+            ),
+          ],
           const SizedBox(height: 20),
           Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Checkbox(
@@ -274,6 +294,34 @@ class _DropField<T> extends StatelessWidget {
         ),
       ),
     ]);
+  }
+}
+
+class _StepRow extends StatelessWidget {
+  const _StepRow({required this.number, required this.text});
+  final String number;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(children: [
+        Container(
+          width: 20, height: 20,
+          decoration: BoxDecoration(color: AppColors.onSurface, shape: BoxShape.circle),
+          child: Center(
+            child: Text(number,
+                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.surface)),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(text,
+              style: GoogleFonts.inter(fontSize: 12, color: AppColors.secondary, height: 1.4)),
+        ),
+      ]),
+    );
   }
 }
 

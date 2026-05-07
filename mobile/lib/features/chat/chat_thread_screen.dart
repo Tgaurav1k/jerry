@@ -1,11 +1,17 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:lucide_icons/lucide_icons.dart';
 import 'package:jerry_app/core/network/api_client.dart';
 import 'package:jerry_app/core/notifications/notification_service.dart';
 import 'package:jerry_app/core/theme/app_colors.dart';
+import 'package:jerry_app/features/call/video_call_screen.dart';
 import 'package:jerry_app/features/chat/chat_provider.dart';
+import 'package:jerry_app/features/lawyers/lawyer_detail_screen.dart';
+import 'package:jerry_app/features/lawyers/lawyer_models.dart';
+import 'package:jerry_app/shared/widgets/rating_modal.dart';
 
 class ChatArgs {
   const ChatArgs({required this.peerId, required this.peerName, this.peerPhotoUrl, this.peerRole = 'LAWYER'});
@@ -64,6 +70,9 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
     ref.read(chatProvider.notifier).markRead(
       _threadId, widget.args.peerId, widget.args.peerRole);
 
+    // Load persisted message history from backend
+    await ref.read(chatProvider.notifier).loadHistory(_threadId);
+
     setState(() {});
     _scrollToBottom();
   }
@@ -80,6 +89,96 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
       content:   text,
     );
     _scrollToBottom();
+  }
+
+  bool _profileLoading = false;
+  bool _callLoading    = false;
+
+  Future<void> _startCall(String type) async {
+    if (widget.args.peerRole != 'LAWYER') return;
+    setState(() => _callLoading = true);
+    try {
+      final api  = ref.read(apiClientProvider);
+      final resp = await api.post('/call/initiate', data: {
+        'lawyerId': widget.args.peerId,
+        'type':     type,
+      });
+      final data           = resp['data'] as Map<String, dynamic>;
+      final consultationId = data['consultationId'] as String;
+      final missed         = data['missed'] as bool? ?? false;
+
+      if (!mounted) return;
+
+      // Lawyer was offline / busy — show missed call bubble immediately
+      if (missed) {
+        ref.read(chatProvider.notifier).addMissedCallBubble(
+          threadId: _threadId,
+          callType: type,
+        );
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${widget.args.peerName} is currently unavailable. They will see a missed call.'),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+        return;
+      }
+
+      final channelName    = data['agoraChannelName'] as String? ?? '';
+      final agoraToken     = data['agoraToken'] as String? ?? '';
+      final uid            = (data['uid'] as num?)?.toInt() ?? 0;
+      // Track so call:ended / call:rejected event can inject bubble into this thread
+      ref.read(chatProvider.notifier).trackCall(consultationId, _threadId, type);
+      await context.push(
+        VideoCallScreen.routePath,
+        extra: VideoCallArgs(
+          consultationId: consultationId,
+          channelId:      channelName,
+          token:          agoraToken,
+          uid:            uid,
+          callType:       type,
+          peerName:       widget.args.peerName,
+        ),
+      );
+      if (!mounted) return;
+      final result = await RatingModal.show(
+        context,
+        lawyerName:     widget.args.peerName,
+        consultationId: consultationId,
+      );
+      if (result != null && result.stars > 0 && mounted) {
+        try {
+          await api.post('/ratings/consultations/$consultationId', data: {
+            'stars': result.stars,
+            if (result.reviewText != null) 'reviewText': result.reviewText,
+          });
+        } catch (_) {}
+      }
+    } on DioException catch (e) {
+      if (!mounted) return;
+      final msg = e.response?.data?['message'] ?? e.message ?? 'Failed to start call';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$msg')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+    } finally {
+      if (mounted) setState(() => _callLoading = false);
+    }
+  }
+
+  Future<void> _openProfile() async {
+    if (widget.args.peerRole != 'LAWYER') return;
+    setState(() => _profileLoading = true);
+    try {
+      final resp   = await ref.read(apiClientProvider).get('/lawyers/${widget.args.peerId}');
+      final lawyer = LawyerSummary.fromJson(resp['data'] as Map<String, dynamic>);
+      if (!mounted) return;
+      context.push(LawyerDetailScreen.routePath, extra: lawyer);
+    } catch (_) {
+    } finally {
+      if (mounted) setState(() => _profileLoading = false);
+    }
   }
 
   void _scrollToBottom() {
@@ -110,18 +209,49 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
       backgroundColor: AppColors.slate50,
       appBar: AppBar(
         leading: IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => context.pop()),
-        title: Row(children: [
-          CircleAvatar(
-            radius: 16,
-            backgroundColor: AppColors.surfaceContainerHigh,
-            child: Text(
-              widget.args.peerName.isNotEmpty ? widget.args.peerName[0].toUpperCase() : '?',
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.onSurface),
-            ),
+        actions: widget.args.peerRole == 'LAWYER' ? [
+          IconButton(
+            icon: _callLoading
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))
+                : const Icon(LucideIcons.phone, size: 20),
+            tooltip: 'Voice call',
+            onPressed: _callLoading ? null : () => _startCall('VOICE'),
           ),
-          const SizedBox(width: 10),
-          Text(widget.args.peerName),
-        ]),
+          IconButton(
+            icon: const Icon(LucideIcons.video, size: 20),
+            tooltip: 'Video call',
+            onPressed: _callLoading ? null : () => _startCall('VIDEO'),
+          ),
+          const SizedBox(width: 4),
+        ] : null,
+        title: GestureDetector(
+          onTap: _profileLoading ? null : _openProfile,
+          behavior: HitTestBehavior.opaque,
+          child: Row(children: [
+            Stack(children: [
+              CircleAvatar(
+                radius: 16,
+                backgroundColor: AppColors.surfaceContainerHigh,
+                child: _profileLoading
+                    ? const SizedBox(
+                        width: 14, height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+                      )
+                    : Text(
+                        widget.args.peerName.isNotEmpty ? widget.args.peerName[0].toUpperCase() : '?',
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.onSurface),
+                      ),
+              ),
+            ]),
+            const SizedBox(width: 10),
+            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(widget.args.peerName),
+              if (widget.args.peerRole == 'LAWYER')
+                Text('Tap to view profile',
+                    style: TextStyle(fontSize: 11, color: AppColors.secondary, fontWeight: FontWeight.w400)),
+            ]),
+          ]),
+        ),
       ),
       body: Column(children: [
         Expanded(
@@ -196,6 +326,8 @@ class _MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (message.type == 'call') return _buildCallBubble();
+
     final time   = DateFormat('HH:mm').format(message.createdAt.toLocal());
     final status = message.status;
 
@@ -223,6 +355,63 @@ class _MessageBubble extends StatelessWidget {
               const SizedBox(width: 4),
               _buildTick(status),
             ],
+          ]),
+        ]),
+      ),
+    );
+  }
+
+  Widget _buildCallBubble() {
+    final isVideo  = message.callType == 'VIDEO';
+    final status   = message.callStatus ?? 'completed';
+    final duration = message.callDurationSeconds ?? 0;
+
+    final String label;
+    final Color  bgColor;
+    final Color  fgColor;
+    final IconData icon;
+
+    if (status == 'completed') {
+      final mins   = duration ~/ 60;
+      final secs   = duration % 60;
+      final durStr = mins > 0 ? '${mins}m ${secs}s' : '${secs}s';
+      label   = isVideo ? 'Video call · $durStr' : 'Voice call · $durStr';
+      bgColor = isMe ? AppColors.blue500 : AppColors.slate100;
+      fgColor = isMe ? Colors.white : AppColors.slate700;
+      icon    = isVideo ? Icons.videocam_rounded : Icons.call_rounded;
+    } else if (status == 'missed') {
+      label   = isVideo ? 'Missed video call' : 'Missed voice call';
+      bgColor = const Color(0xFFFFEDED);
+      fgColor = const Color(0xFFD32F2F);
+      icon    = isVideo ? Icons.videocam_off_rounded : Icons.phone_missed_rounded;
+    } else {
+      label   = 'Call declined';
+      bgColor = const Color(0xFFFFEDED);
+      fgColor = const Color(0xFFD32F2F);
+      icon    = Icons.call_end_rounded;
+    }
+
+    final time = DateFormat('HH:mm').format(message.createdAt.toLocal());
+
+    return Align(
+      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: bgColor,
+          borderRadius: BorderRadius.circular(16).copyWith(
+            bottomRight: isMe  ? const Radius.circular(4) : null,
+            bottomLeft:  !isMe ? const Radius.circular(4) : null,
+          ),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 22, color: fgColor),
+          const SizedBox(width: 10),
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(label, style: TextStyle(color: fgColor, fontWeight: FontWeight.w500, fontSize: 13)),
+            const SizedBox(height: 2),
+            Text(time, style: TextStyle(fontSize: 11, color: fgColor.withValues(alpha: 0.6))),
           ]),
         ]),
       ),

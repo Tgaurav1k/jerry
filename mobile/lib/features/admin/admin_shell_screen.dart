@@ -185,6 +185,30 @@ class _PendingLawyerCardState extends ConsumerState<_PendingLawyerCard> {
     }
   }
 
+  void _openFullScreen(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => Scaffold(
+          backgroundColor: Colors.black,
+          appBar: AppBar(
+            backgroundColor: Colors.black,
+            iconTheme: const IconThemeData(color: Colors.white),
+            title: const Text('License Image', style: TextStyle(color: Colors.white)),
+          ),
+          body: Center(
+            child: InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 4.0,
+              child: Image.memory(_imageBytes!),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _approve() async {
     setState(() => _acting = true);
     try {
@@ -293,7 +317,21 @@ class _PendingLawyerCardState extends ConsumerState<_PendingLawyerCard> {
                     child: Center(child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary)),
                   )
                 : _imageBytes != null
-                    ? Image.memory(_imageBytes!, height: 220, width: double.infinity, fit: BoxFit.cover)
+                    ? GestureDetector(
+                        onTap: () => _openFullScreen(context),
+                        child: Stack(
+                          alignment: Alignment.bottomRight,
+                          children: [
+                            Image.memory(_imageBytes!, height: 220, width: double.infinity, fit: BoxFit.cover),
+                            Container(
+                              margin: const EdgeInsets.all(8),
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(6)),
+                              child: const Icon(LucideIcons.maximize2, size: 16, color: Colors.white),
+                            ),
+                          ],
+                        ),
+                      )
                     : Container(
                         height: 80,
                         decoration: BoxDecoration(

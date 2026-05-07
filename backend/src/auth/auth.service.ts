@@ -278,7 +278,7 @@ export class AuthService {
       data: {
         accessToken,
         refreshToken,
-        user: { id, email, fullName, role },
+        user: { id, email, fullName, role, ...(role === 'LAWYER' && { verificationStatus: 'APPROVED' }) },
       },
       meta: { timestamp: new Date().toISOString() },
     };
