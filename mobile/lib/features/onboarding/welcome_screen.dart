@@ -170,10 +170,13 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                     ),
                     const SizedBox(height: 32),
                     Center(
-                      child: Text(
-                        '© 2026 jerry · Calm legal help, on demand.',
-                        textAlign: TextAlign.center,
-                        style: textTheme.bodySmall?.copyWith(color: const Color(0xFF9CA3AF)),
+                      child: GestureDetector(
+                        onLongPress: () => _goLogin(intent: 'admin'),
+                        child: Text(
+                          '© 2026 jerry · Calm legal help, on demand.',
+                          textAlign: TextAlign.center,
+                          style: textTheme.bodySmall?.copyWith(color: const Color(0xFF9CA3AF)),
+                        ),
                       ),
                     ),
                     const SizedBox(height: 24),

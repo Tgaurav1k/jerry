@@ -171,7 +171,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   onTap: () => setState(() => _role = 'LAWYER')),
               const SizedBox(width: 8),
               _RoleChip(label: 'Admin', value: 'ADMIN', group: _role,
-                  onTap: () => setState(() => _role = 'ADMIN')),
+                  onTap: () => setState(() {
+                    _role = 'ADMIN';
+                    if (_email.text.isEmpty || _email.text == Env.demoUserEmail || _email.text == Env.demoLawyerEmail) {
+                      _email.text = Env.superadminEmail;
+                      _password.text = Env.superadminPassword;
+                    }
+                  })),
             ],
           ),
           const SizedBox(height: 24),
