@@ -58,6 +58,11 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
       return;
     }
 
+    // Listen for rejection or remote hang-up via Socket.IO
+    final socket = await ref.read(socketServiceProvider).connect();
+    socket.on('call:rejected', (_) => _onRemoteEnd('Call declined by lawyer.'));
+    socket.on('call:ended', (_) => _onRemoteEnd(null));
+
     final engine = createAgoraRtcEngine();
     await engine.initialize(RtcEngineContext(appId: appId));
     await engine.enableVideo();
@@ -95,10 +100,27 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
     if (mounted) setState(() {});
   }
 
+  void _onRemoteEnd(String? message) {
+    if (!mounted) return;
+    _engine?.leaveChannel();
+    _engine?.release();
+    _engine = null;
+    final socket = ref.read(socketServiceProvider).socket;
+    socket?.off('call:rejected');
+    socket?.off('call:ended');
+    Navigator.of(context).pop();
+    if (message != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    }
+  }
+
   Future<void> _hangUp() async {
     try {
       await ref.read(apiClientProvider).post('/call/${widget.args.consultationId}/end');
     } catch (_) {}
+    final socket = ref.read(socketServiceProvider).socket;
+    socket?.off('call:rejected');
+    socket?.off('call:ended');
     await _engine?.leaveChannel();
     await _engine?.release();
     if (mounted) Navigator.of(context).pop();
@@ -106,6 +128,9 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
 
   @override
   void dispose() {
+    final socket = ref.read(socketServiceProvider).socket;
+    socket?.off('call:rejected');
+    socket?.off('call:ended');
     _engine?.leaveChannel();
     _engine?.release();
     super.dispose();

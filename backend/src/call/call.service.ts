@@ -96,7 +96,7 @@ export class CallService {
 
     await this.prisma.consultation.update({
       where: { id: consultationId },
-      data: { status: ConsultationStatus.ACTIVE },
+      data: { status: ConsultationStatus.ACTIVE, startedAt: new Date() },
     });
 
     const channelName = c.agoraChannelName ?? '';
@@ -148,7 +148,9 @@ export class CallService {
 
     const ended = new Date();
     const started = c.startedAt;
-    const durationSeconds = Math.max(0, Math.floor((ended.getTime() - started.getTime()) / 1000));
+    const durationSeconds = started
+      ? Math.max(0, Math.floor((ended.getTime() - started.getTime()) / 1000))
+      : 0;
 
     await this.prisma.consultation.update({
       where: { id: consultationId },
