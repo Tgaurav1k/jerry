@@ -67,7 +67,7 @@ class _LicenseUploadScreenState extends ConsumerState<LicenseUploadScreen> {
     try {
       final bytes = await _file!.readAsBytes();
       final ext   = _file!.name.split('.').last.toLowerCase();
-      final mime  = ext == 'pdf' ? 'application/pdf' : 'image/$ext';
+      final mime  = ext == 'pdf' ? 'application/pdf' : ext == 'jpg' ? 'image/jpeg' : 'image/$ext';
 
       final formData = FormData.fromMap({
         'file': MultipartFile.fromBytes(
