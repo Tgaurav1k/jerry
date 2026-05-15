@@ -351,12 +351,20 @@ class ChatNotifier extends StateNotifier<ChatState> {
     }
   }
 
-  void sendMessage({
+  /// Sends a chat message via HTTP POST /chat/send, not WebSocket.
+  ///
+  /// Why HTTP: the WebSocket connection silently dies when the app is
+  /// backgrounded for too long, the network drops, or a NAT eats the
+  /// connection. emit() on a stale socket is a no-op and the message is lost.
+  /// HTTP gives us a real success/failure signal and is rock-solid for
+  /// persistence. Recipients still receive instantly because the server
+  /// broadcasts on the same gateway after persisting.
+  Future<void> sendMessage({
     required String threadId,
     required String peerId,
     required String peerRole,
     required String content,
-  }) {
+  }) async {
     final localId  = 'local-${DateTime.now().microsecondsSinceEpoch}';
     final myId     = _myId ?? '';
     final myRole   = peerRole == 'LAWYER' ? 'USER' : 'LAWYER';
@@ -385,13 +393,34 @@ class ChatNotifier extends StateNotifier<ChatState> {
     );
     state = state.copyWith(threads: threads);
 
-    _socket.socket?.emit('chat:send', {
-      'messageId':    localId,
-      'threadId':     threadId,
-      'recipientId':  peerId,
-      'recipientRole': peerRole,
-      'content':      content,
-    });
+    try {
+      await _api.post('/chat/send', data: {
+        'messageId':     localId,
+        'threadId':      threadId,
+        'recipientId':   peerId,
+        'recipientRole': peerRole,
+        'content':       content,
+      });
+      // Server-side broadcast will echo `chat:message` back to us with the
+      // same messageId, replacing the optimistic bubble. Status flips to
+      // 'delivered' once the recipient is reached (via the chat:sent path on
+      // future ack work, or simply on next loadHistory).
+      _markStatus(threadId, localId, 'sent');
+    } catch (_) {
+      _markStatus(threadId, localId, 'failed');
+    }
+  }
+
+  void _markStatus(String threadId, String messageId, String status) {
+    final threads = Map<String, ChatThread>.from(state.threads);
+    final thread  = threads[threadId];
+    if (thread == null) return;
+    final msgs = thread.messages.map((m) {
+      if (m.id == messageId) m.status = status;
+      return m;
+    }).toList();
+    threads[threadId] = thread.copyWith(messages: msgs);
+    state = state.copyWith(threads: threads);
   }
 
   void markRead(String threadId, String peerId, String peerRole) {

@@ -103,17 +103,18 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
     _scrollToBottom();
   }
 
-  void _send() {
+  Future<void> _send() async {
     final text = _input.text.trim();
     if (text.isEmpty || _myId == null) return;
     _input.clear();
 
-    ref.read(chatProvider.notifier).sendMessage(
+    await ref.read(chatProvider.notifier).sendMessage(
       threadId:  _threadId,
       peerId:    widget.args.peerId,
       peerRole:  widget.args.peerRole,
       content:   text,
     );
+    if (!mounted) return;
     _scrollToBottom();
   }
 
