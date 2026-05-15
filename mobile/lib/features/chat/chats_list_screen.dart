@@ -82,16 +82,35 @@ class ChatsListScreen extends ConsumerWidget {
               return InkWell(
                 onTap: () => context.push(
                   ChatThreadScreen.routePath,
-                  extra: ChatArgs(peerId: t.peerId, peerName: name),
+                  extra: ChatArgs(peerId: t.peerId, peerName: name, peerRole: t.peerRole),
                 ),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                   child: Row(children: [
-                    CircleAvatar(
-                      radius: 26,
-                      backgroundColor: AppColors.surfaceContainerHigh,
-                      child: Text(initial,
-                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: AppColors.onSurface)),
+                    Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        CircleAvatar(
+                          radius: 26,
+                          backgroundColor: AppColors.surfaceContainerHigh,
+                          child: Text(initial,
+                              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: AppColors.onSurface)),
+                        ),
+                        if (t.peerIsOnline)
+                          Positioned(
+                            right: 0,
+                            bottom: 0,
+                            child: Container(
+                              width: 14,
+                              height: 14,
+                              decoration: BoxDecoration(
+                                color: AppColors.onlineGreen,
+                                shape: BoxShape.circle,
+                                border: Border.all(color: AppColors.surface, width: 2.5),
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
                     const SizedBox(width: 14),
                     Expanded(

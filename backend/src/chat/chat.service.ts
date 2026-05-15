@@ -150,13 +150,13 @@ export class ChatService {
       peerIds.LAWYER.size
         ? this.prisma.lawyer.findMany({
             where: { id: { in: [...peerIds.LAWYER] } },
-            select: { id: true, fullName: true, profilePhotoUrl: true },
+            select: { id: true, fullName: true, profilePhotoUrl: true, isOnline: true },
           })
         : Promise.resolve([]),
     ]);
-    const peerMap = new Map<string, { fullName: string; photoUrl: string | null }>();
-    for (const u of users)   peerMap.set(u.id, { fullName: u.fullName, photoUrl: u.profilePhotoUrl });
-    for (const l of lawyers) peerMap.set(l.id, { fullName: l.fullName, photoUrl: l.profilePhotoUrl });
+    const peerMap = new Map<string, { fullName: string; photoUrl: string | null; isOnline: boolean }>();
+    for (const u of users)   peerMap.set(u.id, { fullName: u.fullName, photoUrl: u.profilePhotoUrl, isOnline: false });
+    for (const l of lawyers) peerMap.set(l.id, { fullName: l.fullName, photoUrl: l.profilePhotoUrl, isOnline: l.isOnline });
 
     return rows.map((m) => {
       const isMe     = m.senderId === userId;
@@ -182,6 +182,7 @@ export class ChatService {
         peerRole,
         peerName:            peer?.fullName ?? 'Unknown',
         peerPhotoUrl:        peer?.photoUrl ?? null,
+        peerIsOnline:        peer?.isOnline ?? false,
       };
     });
   }

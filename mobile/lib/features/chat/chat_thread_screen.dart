@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -38,6 +40,8 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
   final _scrollCtrl = ScrollController();
   String? _myId;
   late String _threadId;
+  bool _peerOnline = false;
+  Timer? _presenceTimer;
 
   @override
   void initState() {
@@ -47,10 +51,24 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
 
   @override
   void dispose() {
+    _presenceTimer?.cancel();
     NotificationService.currentThreadId = null;
     _input.dispose();
     _scrollCtrl.dispose();
     super.dispose();
+  }
+
+  /// Polls the peer's online flag from /lawyers/:id. Cheap and good enough
+  /// for the demo — sub-second freshness isn't required for a presence dot.
+  Future<void> _refreshPeerPresence() async {
+    if (widget.args.peerRole != 'LAWYER') return;
+    try {
+      final resp = await ref.read(apiClientProvider).get('/lawyers/${widget.args.peerId}');
+      final data = resp['data'] as Map<String, dynamic>?;
+      final online = data?['isOnline'] == true;
+      if (!mounted || online == _peerOnline) return;
+      setState(() => _peerOnline = online);
+    } catch (_) {/* ignore — presence is decorative */}
   }
 
   Future<void> _init() async {
@@ -73,6 +91,13 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
 
     // Load persisted message history from backend
     await ref.read(chatProvider.notifier).loadHistory(_threadId);
+
+    // Initial presence pull + refresh every 30s while the screen is open.
+    unawaited(_refreshPeerPresence());
+    _presenceTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _refreshPeerPresence(),
+    );
 
     setState(() {});
     _scrollToBottom();
@@ -247,27 +272,50 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
           onTap: _profileLoading ? null : _openProfile,
           behavior: HitTestBehavior.opaque,
           child: Row(children: [
-            Stack(children: [
-              CircleAvatar(
-                radius: 16,
-                backgroundColor: AppColors.surfaceContainerHigh,
-                child: _profileLoading
-                    ? const SizedBox(
-                        width: 14, height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
-                      )
-                    : Text(
-                        widget.args.peerName.isNotEmpty ? widget.args.peerName[0].toUpperCase() : '?',
-                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.onSurface),
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                CircleAvatar(
+                  radius: 16,
+                  backgroundColor: AppColors.surfaceContainerHigh,
+                  child: _profileLoading
+                      ? const SizedBox(
+                          width: 14, height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+                        )
+                      : Text(
+                          widget.args.peerName.isNotEmpty ? widget.args.peerName[0].toUpperCase() : '?',
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.onSurface),
+                        ),
+                ),
+                if (_peerOnline)
+                  Positioned(
+                    right: -1,
+                    bottom: -1,
+                    child: Container(
+                      width: 10,
+                      height: 10,
+                      decoration: BoxDecoration(
+                        color: AppColors.onlineGreen,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: AppColors.surface, width: 2),
                       ),
-              ),
-            ]),
+                    ),
+                  ),
+              ],
+            ),
             const SizedBox(width: 10),
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(widget.args.peerName),
               if (widget.args.peerRole == 'LAWYER')
-                Text('Tap to view profile',
-                    style: TextStyle(fontSize: 11, color: AppColors.secondary, fontWeight: FontWeight.w400)),
+                Text(
+                  _peerOnline ? 'Online' : 'Tap to view profile',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: _peerOnline ? AppColors.onlineGreen : AppColors.secondary,
+                    fontWeight: _peerOnline ? FontWeight.w600 : FontWeight.w400,
+                  ),
+                ),
             ]),
           ]),
         ),

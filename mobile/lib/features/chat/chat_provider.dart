@@ -60,23 +60,35 @@ class ChatThread {
     required this.peerId,
     required this.peerRole,
     this.peerName = '',
+    this.peerIsOnline = false,
     List<ChatMessage>? messages,
-  }) : messages = messages ?? [];
+  }) : messages = _sortByTime(messages ?? const []);
 
   final String threadId;
   final String peerId;
   final String peerRole;
   String peerName;
+  bool peerIsOnline;
   List<ChatMessage> messages;
 
   ChatMessage? get lastMessage => messages.isEmpty ? null : messages.last;
 
-  ChatThread copyWith({String? peerName, List<ChatMessage>? messages}) => ChatThread(
+  /// Messages are always stored oldest → newest. Live socket events,
+  /// history fetches, and thread-list previews all funnel through here so the
+  /// UI never has to second-guess ordering.
+  static List<ChatMessage> _sortByTime(Iterable<ChatMessage> input) {
+    final list = List<ChatMessage>.from(input);
+    list.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return list;
+  }
+
+  ChatThread copyWith({String? peerName, bool? peerIsOnline, List<ChatMessage>? messages}) => ChatThread(
         threadId: threadId,
         peerId:   peerId,
         peerRole: peerRole,
         peerName: peerName ?? this.peerName,
-        messages: messages ?? List.from(this.messages),
+        peerIsOnline: peerIsOnline ?? this.peerIsOnline,
+        messages: messages ?? this.messages,
       );
 }
 
@@ -166,6 +178,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
         final peerId       = m['peerId']       as String? ?? '';
         final peerRole     = m['peerRole']     as String? ?? 'LAWYER';
         final peerName     = m['peerName']     as String? ?? '';
+        final peerIsOnline = m['peerIsOnline'] == true;
         if (peerId.isEmpty) continue;
 
         // Last message preview
@@ -178,14 +191,18 @@ class ChatNotifier extends StateNotifier<ChatState> {
             peerId:   peerId,
             peerRole: peerRole,
             peerName: peerName,
+            peerIsOnline: peerIsOnline,
             messages: [lastMsg],
           );
         } else {
-          // Update peer name (in case it was empty), keep existing messages
+          // Update peer name (in case it was empty), append last-message
+          // preview if we haven't seen it yet. ChatThread re-sorts internally
+          // so insertion order here doesn't matter.
           final hasMsg = existing.messages.any((x) => x.id == lastMsg.id);
           threads[threadId] = existing.copyWith(
             peerName: peerName.isNotEmpty ? peerName : existing.peerName,
-            messages: hasMsg ? existing.messages : [lastMsg, ...existing.messages],
+            peerIsOnline: peerIsOnline,
+            messages: hasMsg ? existing.messages : [...existing.messages, lastMsg],
           );
         }
       }
@@ -414,11 +431,13 @@ class ChatNotifier extends StateNotifier<ChatState> {
       final threads = Map<String, ChatThread>.from(state.threads);
       final thread  = threads[threadId];
       if (thread == null) return;
-      // Merge: keep local optimistic messages, prepend history
+      // Merge in any history rows we don't already have. Final ordering is
+      // enforced by ChatThread._sortByTime, so the insertion order here doesn't
+      // matter — we just need every message to be present exactly once.
       final existingIds = thread.messages.map((m) => m.id).toSet();
       final newMsgs = msgs.where((m) => !existingIds.contains(m.id)).toList();
       if (newMsgs.isEmpty) return;
-      threads[threadId] = thread.copyWith(messages: [...newMsgs, ...thread.messages]);
+      threads[threadId] = thread.copyWith(messages: [...thread.messages, ...newMsgs]);
       state = state.copyWith(threads: threads);
     } catch (_) {}
   }
