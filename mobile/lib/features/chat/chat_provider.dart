@@ -130,15 +130,24 @@ class ChatNotifier extends StateNotifier<ChatState> {
   }
 
   Future<void> _init() async {
-    _myId = await _storage.getUserId();
-    final sock = await _socket.connect();
-    if (sock == null) return;
+    // Connect socket and ATTACH LISTENERS FIRST. The backend drains pending
+    // messages immediately on handshake — if listeners aren't attached yet,
+    // those drained events go to /dev/null. _myId is read in parallel.
+    final sockFuture = _socket.connect();
+    final idFuture   = _storage.getUserId();
+
+    final sock = await sockFuture;
+    if (sock == null) {
+      _myId = await idFuture;
+      return;
+    }
     sock.on('chat:message',  _onMessage);
     sock.on('chat:sent',     _onSent);
     sock.on('chat:read_ack', _onReadAck);
     sock.on('call:ended',    _onCallEnded);
     sock.on('call:rejected', _onCallRejected);
-    // Restore conversations from server on startup
+
+    _myId = await idFuture;
     if (_myId != null && _myId!.isNotEmpty) {
       await loadThreads();
     }
@@ -243,7 +252,11 @@ class ChatNotifier extends StateNotifier<ChatState> {
     state = state.copyWith(threads: threads);
   }
 
-  void _onMessage(dynamic raw) {
+  /// Socket.IO passes positional args; the last one is the ack callback
+  /// when the server emitted with one (used by the pending-message drain).
+  /// We invoke it after successfully integrating the message so the backend
+  /// only deletes the PendingMessage row on confirmed receipt.
+  void _onMessage(dynamic raw, [dynamic ack]) {
     final data = Map<String, dynamic>.from(raw as Map);
     final msg  = ChatMessage.fromMap(data);
     final isMe = msg.senderId == _myId;
@@ -273,6 +286,11 @@ class ChatNotifier extends StateNotifier<ChatState> {
       unread[msg.threadId] = (unread[msg.threadId] ?? 0) + 1;
     }
     state = state.copyWith(threads: threads, unreadByThreadId: unread);
+
+    // Confirm receipt so backend deletes the PendingMessage row.
+    if (ack is Function) {
+      try { ack({'ok': true}); } catch (_) {}
+    }
   }
 
   void _onSent(dynamic raw) {

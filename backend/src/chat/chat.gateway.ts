@@ -46,14 +46,19 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (role === 'LAWYER') await client.join(`lawyer:${sub}`);
       if (role === 'USER') await client.join(`user:${sub}`);
 
-      // Drain pending messages
+      // Drain pending messages. Use Socket.IO's ack callback so we only
+      // delete each PendingMessage row after the client confirms it processed
+      // the event. If the client never ACKs (slow boot, listener not yet
+      // attached, network blip), the row stays in DB and re-delivers on the
+      // next reconnect — no silent message loss.
       const pending = await this.chat.getPending(sub, role as 'USER' | 'LAWYER');
       for (const msg of pending) {
-        client.emit('chat:message', msg.payload);
-      }
-      if (pending.length) {
-        const ids = pending.map((p) => p.id);
-        await this.chat.ackPending(ids);
+        const pendingId = msg.id;
+        client.emit('chat:message', msg.payload, async (ack?: { ok?: boolean }) => {
+          if (ack?.ok) {
+            await this.chat.ackPending([pendingId]).catch(() => {});
+          }
+        });
       }
     } catch {
       client.disconnect(true);
