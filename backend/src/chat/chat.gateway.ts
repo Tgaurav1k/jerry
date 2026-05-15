@@ -81,7 +81,11 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       content: string;
     },
   ) {
-    const sender = client.data.user as JwtPayload;
+    const sender = client.data.user as JwtPayload | undefined;
+    if (!sender?.sub) {
+      client.emit('chat:error', { messageId: payload.messageId, error: 'unauthorized' });
+      return;
+    }
     let result;
     try {
       result = await this.chat.send(sender, payload);

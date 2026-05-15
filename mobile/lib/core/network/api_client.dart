@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
+import '../auth/session_bridge.dart';
 import '../config/env.dart';
 
 // ─── Token storage ────────────────────────────────────────────────────────────
@@ -97,6 +98,7 @@ class ApiClient {
             }
           }
           await _storage.clear();
+          SessionBridge.notifySessionCleared();
         }
         return handler.next(error);
       },
@@ -171,9 +173,20 @@ class SocketService {
 
   SocketService(this._storage);
 
-  Future<io.Socket> connect() async {
-    if (_socket != null && _socket!.connected) return _socket!;
+  /// Returns null when there is no access token (logged out). Auth is fixed at
+  /// connect time — callers must disconnect on logout so the next session gets a
+  /// new handshake with the correct JWT.
+  Future<io.Socket?> connect() async {
     final token = await _storage.getAccessToken();
+    if (token == null || token.isEmpty) {
+      disconnect();
+      return null;
+    }
+    if (_socket != null && _socket!.connected) {
+      return _socket;
+    }
+    _socket?.disconnect();
+    _socket?.dispose();
     _socket = io.io(
       Env.socketUrl,
       io.OptionBuilder()
@@ -183,11 +196,16 @@ class SocketService {
           .enableReconnection()
           .build(),
     );
-    return _socket!;
+    return _socket;
   }
 
   io.Socket? get socket => _socket;
-  void disconnect() { _socket?.disconnect(); _socket = null; }
+  void disconnect() {
+    _socket?.disconnect();
+    _socket?.dispose();
+    _socket = null;
+  }
+
   bool get isConnected => _socket?.connected ?? false;
 }
 

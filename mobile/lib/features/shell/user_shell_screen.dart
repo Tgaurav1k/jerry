@@ -3,9 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:jerry_app/core/auth/session_bridge.dart';
 import 'package:jerry_app/core/network/api_client.dart';
 import 'package:jerry_app/core/theme/app_colors.dart';
 import 'package:jerry_app/features/chat/chats_list_screen.dart';
+import 'package:jerry_app/features/chat/chat_provider.dart';
 import 'package:jerry_app/features/home/dark_home_screen.dart';
 import 'package:jerry_app/features/home/history_placeholder_screen.dart';
 import 'package:jerry_app/features/home/profile_placeholder_screen.dart';
@@ -55,6 +57,7 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final chatUnread = ref.watch(chatProvider.select((s) => s.totalChatUnread));
     return Scaffold(
       key: _scaffoldKey,
       backgroundColor: _isDarkTab ? AppColors.darkBg : AppColors.surface,
@@ -78,6 +81,7 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
             } catch (_) {}
           }
           await storage.clear();
+          SessionBridge.notifySessionCleared();
           if (mounted) context.go(WelcomeScreen.routePath);
         },
       ),
@@ -163,6 +167,7 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
       bottomNavigationBar: _isDarkTab
           ? _DarkBottomNav(
               currentIndex: _index,
+              chatUnread: chatUnread,
               onTap: (i) => setState(() {
                 _index = i;
                 if (i != 0) _showDirectory = false;
@@ -175,6 +180,7 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
                 _index = i;
                 if (i != 0) _showDirectory = false;
               }),
+              tabBadgeCounts: _showDirectory ? null : [0, chatUnread, 0, 0],
               items: const [
                 FloatingNavItem(LucideIcons.home, 'HOME'),
                 FloatingNavItem(LucideIcons.messageSquare, 'CHATS'),
@@ -205,11 +211,13 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
 class _DarkBottomNav extends StatelessWidget {
   const _DarkBottomNav({
     required this.currentIndex,
+    required this.chatUnread,
     required this.onTap,
     required this.onAdd,
   });
 
   final int currentIndex;
+  final int chatUnread;
   final ValueChanged<int> onTap;
   final VoidCallback onAdd;
 
@@ -237,6 +245,7 @@ class _DarkBottomNav extends StatelessWidget {
               icon: LucideIcons.messageSquare,
               label: 'CHAT',
               selected: currentIndex == 1,
+              badgeCount: chatUnread,
               onTap: () => onTap(1),
             ),
             _DarkNavItem(
@@ -272,12 +281,14 @@ class _DarkNavItem extends StatelessWidget {
     required this.label,
     required this.selected,
     required this.onTap,
+    this.badgeCount = 0,
   });
 
   final IconData icon;
   final String label;
   final bool selected;
   final VoidCallback onTap;
+  final int badgeCount;
 
   @override
   Widget build(BuildContext context) {
@@ -287,10 +298,46 @@ class _DarkNavItem extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            icon,
-            size: 20,
-            color: selected ? AppColors.gold : AppColors.darkTextMuted,
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Icon(
+                icon,
+                size: 20,
+                color: selected ? AppColors.gold : AppColors.darkTextMuted,
+              ),
+              if (badgeCount > 0)
+                Positioned(
+                  right: -8,
+                  top: -6,
+                  child: Container(
+                    padding: badgeCount > 1
+                        ? const EdgeInsets.symmetric(horizontal: 4, vertical: 1)
+                        : EdgeInsets.zero,
+                    constraints: BoxConstraints(
+                      minWidth: badgeCount > 1 ? 14 : 7,
+                      minHeight: badgeCount > 1 ? 12 : 7,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE53935),
+                      borderRadius: BorderRadius.circular(badgeCount > 1 ? 6 : 99),
+                      border: Border.all(color: AppColors.darkBg, width: 1),
+                    ),
+                    alignment: Alignment.center,
+                    child: badgeCount > 1
+                        ? Text(
+                            badgeCount > 9 ? '9+' : '$badgeCount',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 8,
+                              fontWeight: FontWeight.w700,
+                              height: 1,
+                            ),
+                          )
+                        : null,
+                  ),
+                ),
+            ],
           ),
           const SizedBox(height: 2),
           Text(

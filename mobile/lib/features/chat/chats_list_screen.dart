@@ -18,7 +18,8 @@ class ChatsListScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final tt      = Theme.of(context).textTheme;
-    final threads = ref.watch(chatProvider).threadList;
+    final chat    = ref.watch(chatProvider);
+    final threads = chat.threadList;
 
     final content = CustomScrollView(
       slivers: [
@@ -76,6 +77,7 @@ class ChatsListScreen extends ConsumerWidget {
               final preview = last.content;
               final timeStr = DateFormat('h:mm a').format(last.createdAt.toLocal());
               final initial = name.isNotEmpty ? name[0].toUpperCase() : '?';
+              final unread  = chat.unreadByThreadId[t.threadId] ?? 0;
 
               return InkWell(
                 onTap: () => context.push(
@@ -103,6 +105,31 @@ class ChatsListScreen extends ConsumerWidget {
                           Text(timeStr, style: tt.labelSmall?.copyWith(color: AppColors.outline, letterSpacing: 0.3)),
                         ]),
                         const SizedBox(height: 4),
+                        if (unread > 0)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: const BoxDecoration(
+                                    color: AppColors.gold,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  unread > 1 ? '$unread new messages' : 'New message',
+                                  style: tt.labelSmall?.copyWith(
+                                    color: AppColors.gold,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 0.3,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         Text(preview,
                             maxLines: 1, overflow: TextOverflow.ellipsis,
                             style: tt.bodySmall?.copyWith(color: AppColors.secondary)),

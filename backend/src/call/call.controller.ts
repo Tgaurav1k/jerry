@@ -37,4 +37,13 @@ export class CallController {
   end(@CurrentUser() user: JwtPayload, @Param('consultationId') consultationId: string) {
     return this.call.end(user, consultationId);
   }
+
+  @Post(':consultationId/token')
+  @UseGuards(JwtAuthGuard)
+  refreshToken(
+    @CurrentUser() user: JwtPayload,
+    @Param('consultationId') consultationId: string,
+  ) {
+    return this.call.refreshToken(user, consultationId);
+  }
 }

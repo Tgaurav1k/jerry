@@ -53,7 +53,11 @@ class _LawyerDetailScreenState extends ConsumerState<LawyerDetailScreen> {
   Future<void> _startVideo() async {
     setState(() => _loading = true);
     try {
-      final api  = ref.read(apiClientProvider);
+      final api     = ref.read(apiClientProvider);
+      final storage = ref.read(tokenStorageProvider);
+      final myId    = await storage.getUserId() ?? '';
+      final threadId = ChatNotifier.computeThreadId(myId, widget.lawyer.id);
+
       final resp = await api.post('/call/initiate', data: {
         'lawyerId': widget.lawyer.id,
         'type':     'VIDEO',
@@ -61,11 +65,39 @@ class _LawyerDetailScreenState extends ConsumerState<LawyerDetailScreen> {
 
       final data           = resp['data'] as Map<String, dynamic>;
       final consultationId = data['consultationId'] as String;
-      final channelName    = data['agoraChannelName'] as String? ?? '';
-      final agoraToken     = data['agoraToken'] as String? ?? '';
-      final uid            = (data['uid'] as num?)?.toInt() ?? 0;
+      final missed         = data['missed'] as bool? ?? false;
 
       if (!mounted) return;
+
+      ref.read(chatProvider.notifier).ensureThread(
+        threadId: threadId,
+        peerId:   widget.lawyer.id,
+        peerRole: 'LAWYER',
+        peerName: widget.lawyer.fullName,
+      );
+
+      if (missed) {
+        ref.read(chatProvider.notifier).addMissedCallBubble(
+          threadId: threadId,
+          callType: 'VIDEO',
+        );
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${widget.lawyer.fullName} is currently unavailable. They will see a missed call.',
+            ),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+        return;
+      }
+
+      final channelName = data['agoraChannelName'] as String? ?? '';
+      final agoraToken  = data['agoraToken'] as String? ?? '';
+      final uid         = (data['uid'] as num?)?.toInt() ?? 0;
+
+      ref.read(chatProvider.notifier).trackCall(consultationId, threadId, 'VIDEO');
+
       await context.push(
         VideoCallScreen.routePath,
         extra: VideoCallArgs(
@@ -73,23 +105,42 @@ class _LawyerDetailScreenState extends ConsumerState<LawyerDetailScreen> {
           channelId:      channelName,
           token:          agoraToken,
           uid:            uid,
+          callType:       'VIDEO',
+          peerName:       widget.lawyer.fullName,
         ),
       );
 
       if (!mounted) return;
-      final result = await RatingModal.show(
+
+      // Only prompt for a rating if the consultation actually reached ENDED
+      // state. Calls that were rejected, missed, or dropped aren't rateable.
+      bool isEnded = false;
+      try {
+        final detail = await api.get('/consultations/$consultationId');
+        final status = (detail['data'] as Map<String, dynamic>?)?['status'] as String?;
+        isEnded = status == 'ENDED';
+      } catch (_) {
+        isEnded = false;
+      }
+
+      if (!mounted || !isEnded) return;
+
+      final submitted = await RatingModal.show(
         context,
         lawyerName:     widget.lawyer.fullName,
         consultationId: consultationId,
+        onSubmit: (r) async {
+          await api.post('/ratings/consultations/$consultationId', data: {
+            'stars': r.stars,
+            if (r.reviewText != null) 'reviewText': r.reviewText,
+          });
+        },
       );
 
-      if (result != null && result.stars > 0 && mounted) {
-        try {
-          await api.post('/ratings/consultations/$consultationId', data: {
-            'stars': result.stars,
-            if (result.reviewText != null) 'reviewText': result.reviewText,
-          });
-        } catch (_) {}
+      if (submitted && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Thanks for your feedback.')),
+        );
       }
     } on DioException catch (e) {
       if (!mounted) return;

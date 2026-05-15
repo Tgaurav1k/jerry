@@ -9,11 +9,14 @@ class FloatingGlassBottomNav extends StatelessWidget {
     required this.currentIndex,
     required this.onTap,
     required this.items,
+    /// Per-tab unread/badge count (same order as [items]). Null = hide badges.
+    this.tabBadgeCounts,
   });
 
   final int currentIndex;
   final ValueChanged<int> onTap;
   final List<FloatingNavItem> items;
+  final List<int>? tabBadgeCounts;
 
   @override
   Widget build(BuildContext context) {
@@ -38,6 +41,10 @@ class FloatingGlassBottomNav extends StatelessWidget {
             children: List.generate(items.length, (i) {
               final spec = items[i];
               final selected = i == currentIndex;
+              final badge = tabBadgeCounts != null &&
+                      i < tabBadgeCounts!.length
+                  ? tabBadgeCounts![i]
+                  : 0;
               return Expanded(
                 child: GestureDetector(
                   onTap: () => onTap(i),
@@ -52,10 +59,47 @@ class FloatingGlassBottomNav extends StatelessWidget {
                           color: selected ? AppColors.primary : Colors.transparent,
                           borderRadius: BorderRadius.circular(20),
                         ),
-                        child: Icon(
-                          spec.icon,
-                          size: 20,
-                          color: selected ? Colors.white : AppColors.outline,
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            Icon(
+                              spec.icon,
+                              size: 20,
+                              color: selected ? Colors.white : AppColors.outline,
+                            ),
+                            if (badge > 0)
+                              Positioned(
+                                right: -6,
+                                top: -6,
+                                child: Container(
+                                  padding: badge > 1
+                                      ? const EdgeInsets.symmetric(horizontal: 5, vertical: 2)
+                                      : EdgeInsets.zero,
+                                  constraints: BoxConstraints(
+                                    minWidth: badge > 1 ? 16 : 8,
+                                    minHeight: badge > 1 ? 14 : 8,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFE53935),
+                                    shape: badge > 1 ? BoxShape.rectangle : BoxShape.circle,
+                                    borderRadius: badge > 1 ? BorderRadius.circular(8) : null,
+                                    border: Border.all(color: Colors.white, width: 1.2),
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: badge > 1
+                                      ? Text(
+                                          badge > 9 ? '9+' : '$badge',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.w700,
+                                            height: 1,
+                                          ),
+                                        )
+                                      : null,
+                                ),
+                              ),
+                          ],
                         ),
                       ),
                       const SizedBox(height: 2),

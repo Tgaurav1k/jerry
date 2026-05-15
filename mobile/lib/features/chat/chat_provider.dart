@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:jerry_app/core/network/api_client.dart';
+import 'package:jerry_app/core/notifications/notification_service.dart';
 
 // ── Models ────────────────────────────────────────────────────────
 
@@ -80,8 +81,13 @@ class ChatThread {
 }
 
 class ChatState {
-  const ChatState({this.threads = const {}});
+  const ChatState({
+    this.threads = const {},
+    this.unreadByThreadId = const {},
+  });
   final Map<String, ChatThread> threads;
+  /// Unread incoming messages per thread (incremented via Socket when not viewing that thread).
+  final Map<String, int> unreadByThreadId;
 
   List<ChatThread> get threadList {
     final list = threads.values.where((t) => t.lastMessage != null).toList();
@@ -89,7 +95,17 @@ class ChatState {
     return list;
   }
 
-  ChatState copyWith(Map<String, ChatThread> updated) => ChatState(threads: updated);
+  int get totalChatUnread =>
+      unreadByThreadId.values.fold<int>(0, (sum, n) => sum + n);
+
+  ChatState copyWith({
+    Map<String, ChatThread>? threads,
+    Map<String, int>? unreadByThreadId,
+  }) =>
+      ChatState(
+        threads: threads ?? this.threads,
+        unreadByThreadId: unreadByThreadId ?? this.unreadByThreadId,
+      );
 }
 
 // ── Notifier ──────────────────────────────────────────────────────
@@ -116,6 +132,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
   Future<void> _init() async {
     _myId = await _storage.getUserId();
     final sock = await _socket.connect();
+    if (sock == null) return;
     sock.on('chat:message',  _onMessage);
     sock.on('chat:sent',     _onSent);
     sock.on('chat:read_ack', _onReadAck);
@@ -163,7 +180,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
           );
         }
       }
-      state = state.copyWith(threads);
+      state = state.copyWith(threads: threads);
     } catch (_) {}
   }
 
@@ -223,7 +240,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
       callDurationSeconds: durationSeconds,
     );
     threads[threadId] = thread.copyWith(messages: [...thread.messages, msg]);
-    state = state.copyWith(threads);
+    state = state.copyWith(threads: threads);
   }
 
   void _onMessage(dynamic raw) {
@@ -250,7 +267,12 @@ class ChatNotifier extends StateNotifier<ChatState> {
     }
 
     threads[msg.threadId] = thread.copyWith(messages: msgs);
-    state = state.copyWith(threads);
+
+    final unread = Map<String, int>.from(state.unreadByThreadId);
+    if (!isMe && msg.threadId != NotificationService.currentThreadId) {
+      unread[msg.threadId] = (unread[msg.threadId] ?? 0) + 1;
+    }
+    state = state.copyWith(threads: threads, unreadByThreadId: unread);
   }
 
   void _onSent(dynamic raw) {
@@ -264,7 +286,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
       if (idx != -1) {
         msgs[idx].status = 'delivered';
         threads[entry.key] = entry.value.copyWith(messages: msgs);
-        state = state.copyWith(threads);
+        state = state.copyWith(threads: threads);
         return;
       }
     }
@@ -282,7 +304,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
       return m;
     }).toList();
     threads[threadId] = thread.copyWith(messages: msgs);
-    state = state.copyWith(threads);
+    state = state.copyWith(threads: threads);
   }
 
   void setPeerName(String threadId, String name) {
@@ -290,7 +312,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
     final thread  = threads[threadId];
     if (thread != null && thread.peerName != name) {
       threads[threadId] = thread.copyWith(peerName: name);
-      state = state.copyWith(threads);
+      state = state.copyWith(threads: threads);
     }
   }
 
@@ -317,13 +339,16 @@ class ChatNotifier extends StateNotifier<ChatState> {
     );
 
     final threads = Map<String, ChatThread>.from(state.threads);
-    final thread  = threads[threadId];
-    if (thread != null) {
-      threads[threadId] = thread.copyWith(
-        messages: [...thread.messages, optimistic],
-      );
-      state = state.copyWith(threads);
-    }
+    var thread = threads[threadId];
+    thread ??= ChatThread(
+      threadId: threadId,
+      peerId: peerId,
+      peerRole: peerRole,
+    );
+    threads[threadId] = thread.copyWith(
+      messages: [...thread.messages, optimistic],
+    );
+    state = state.copyWith(threads: threads);
 
     _socket.socket?.emit('chat:send', {
       'messageId':    localId,
@@ -359,7 +384,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
     } else {
       threads[threadId] = threads[threadId]!.copyWith(peerName: peerName);
     }
-    state = state.copyWith(threads);
+    state = state.copyWith(threads: threads);
   }
 
   Future<void> loadHistory(String threadId) async {
@@ -376,8 +401,14 @@ class ChatNotifier extends StateNotifier<ChatState> {
       final newMsgs = msgs.where((m) => !existingIds.contains(m.id)).toList();
       if (newMsgs.isEmpty) return;
       threads[threadId] = thread.copyWith(messages: [...newMsgs, ...thread.messages]);
-      state = state.copyWith(threads);
+      state = state.copyWith(threads: threads);
     } catch (_) {}
+  }
+
+  void clearUnread(String threadId) {
+    if (!state.unreadByThreadId.containsKey(threadId)) return;
+    final unread = Map<String, int>.from(state.unreadByThreadId)..remove(threadId);
+    state = state.copyWith(unreadByThreadId: unread);
   }
 
   List<ChatMessage> messagesFor(String threadId) =>
@@ -385,11 +416,14 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
   @override
   void dispose() {
-    _socket.socket?.off('chat:message');
-    _socket.socket?.off('chat:sent');
-    _socket.socket?.off('chat:read_ack');
-    _socket.socket?.off('call:ended');
-    _socket.socket?.off('call:rejected');
+    final s = _socket.socket;
+    if (s != null) {
+      s.off('chat:message', _onMessage);
+      s.off('chat:sent', _onSent);
+      s.off('chat:read_ack', _onReadAck);
+      s.off('call:ended', _onCallEnded);
+      s.off('call:rejected', _onCallRejected);
+    }
     super.dispose();
   }
 }

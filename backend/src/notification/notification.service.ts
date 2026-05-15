@@ -51,6 +51,32 @@ export class NotificationService {
     await this._sendToTokens(sessions.map((s) => s.fcmToken!), title, body, data);
   }
 
+  /**
+   * Data-only push (no notification block) for events that the client must
+   * handle itself — e.g. CallKit ringing UI. Wakes the app in background so
+   * onBackgroundMessage fires instead of the system tray banner.
+   */
+  async sendDataOnlyToLawyer(lawyerId: string, data: Record<string, string>) {
+    const sessions = await this.prisma.deviceSession.findMany({
+      where: { lawyerId, fcmToken: { not: null } },
+    });
+    const tokens = sessions.map((s) => s.fcmToken!).filter(Boolean);
+    if (!this.fcmEnabled || !tokens.length) {
+      this.logger.debug(`[FCM stub data-only] → ${tokens.length} tokens: ${JSON.stringify(data)}`);
+      return;
+    }
+    try {
+      await this.fcmApp.messaging().sendEachForMulticast({
+        tokens,
+        data,
+        android: { priority: 'high' },
+        apns: { headers: { 'apns-priority': '10', 'apns-push-type': 'voip' } },
+      });
+    } catch (e) {
+      this.logger.error('FCM data-only send failed', e);
+    }
+  }
+
   private async _sendToTokens(tokens: string[], title: string, body: string, data?: Record<string, string>) {
     if (!this.fcmEnabled || !tokens.length) {
       this.logger.debug(`[FCM stub] → ${tokens.length} tokens: ${title} — ${body}`);

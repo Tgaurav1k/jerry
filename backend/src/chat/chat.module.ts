@@ -10,7 +10,7 @@ import { ChatService } from './chat.service';
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: (cfg: ConfigService) => ({
-        secret: cfg.get<string>('JWT_SECRET'),
+        secret: cfg.getOrThrow<string>('JWT_ACCESS_SECRET'),
       }),
       inject: [ConfigService],
     }),

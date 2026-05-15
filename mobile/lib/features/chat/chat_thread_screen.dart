@@ -67,6 +67,7 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
     );
 
     NotificationService.currentThreadId = _threadId;
+    ref.read(chatProvider.notifier).clearUnread(_threadId);
     ref.read(chatProvider.notifier).markRead(
       _threadId, widget.args.peerId, widget.args.peerRole);
 
@@ -142,18 +143,36 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
         ),
       );
       if (!mounted) return;
-      final result = await RatingModal.show(
+
+      // Only prompt for a rating if the consultation actually reached ENDED
+      // state. Calls that were rejected, missed, or dropped aren't rateable.
+      bool isEnded = false;
+      try {
+        final detail = await api.get('/consultations/$consultationId');
+        final status = (detail['data'] as Map<String, dynamic>?)?['status'] as String?;
+        isEnded = status == 'ENDED';
+      } catch (_) {
+        isEnded = false;
+      }
+
+      if (!mounted || !isEnded) return;
+
+      final submitted = await RatingModal.show(
         context,
         lawyerName:     widget.args.peerName,
         consultationId: consultationId,
-      );
-      if (result != null && result.stars > 0 && mounted) {
-        try {
+        onSubmit: (r) async {
           await api.post('/ratings/consultations/$consultationId', data: {
-            'stars': result.stars,
-            if (result.reviewText != null) 'reviewText': result.reviewText,
+            'stars': r.stars,
+            if (r.reviewText != null) 'reviewText': r.reviewText,
           });
-        } catch (_) {}
+        },
+      );
+
+      if (submitted && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Thanks for your feedback.')),
+        );
       }
     } on DioException catch (e) {
       if (!mounted) return;

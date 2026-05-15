@@ -48,6 +48,16 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Atomic "set if not exists" with TTL. Returns true if we won the lock,
+   * false if another caller already holds it. Used for distributed locks
+   * (e.g. lawyer-busy state) so two backend instances can't race.
+   */
+  async setNX(key: string, value: string, ttlSeconds: number): Promise<boolean> {
+    const result = await this.client.set(key, value, 'EX', ttlSeconds, 'NX');
+    return result === 'OK';
+  }
+
   async get(key: string): Promise<string | null> {
     return this.client.get(key);
   }

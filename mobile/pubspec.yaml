@@ -29,6 +29,7 @@ dependencies:
   uuid: ^4.2.2
   image_picker: ^1.0.7
   flutter_local_notifications: ^18.0.1
+  flutter_callkit_incoming: ^2.0.4+2
 
 dev_dependencies:
   flutter_test:

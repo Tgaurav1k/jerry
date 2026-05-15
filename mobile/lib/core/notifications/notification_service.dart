@@ -6,7 +6,7 @@ class NotificationService {
 
   static final _plugin = FlutterLocalNotificationsPlugin();
 
-  // ChatThreadScreen sets this so we skip notifications for the open thread
+  // ChatThreadScreen sets this so FCM skips that thread; ChatNotifier uses it for in-app unread.
   static String? currentThreadId;
 
   // Called after login to get and register FCM token
@@ -33,12 +33,20 @@ class NotificationService {
     // Request FCM permission
     await FirebaseMessaging.instance.requestPermission();
 
-    // Show foreground notifications as local notifications
+    // Foreground: Socket.IO already updates chat UI — do not show a heads-up for
+    // chat messages (avoids duplicate popups while on Chats or in a thread).
     FirebaseMessaging.onMessage.listen((message) {
+      final type = message.data['type'] as String?;
+      if (type == 'chat:message') {
+        return;
+      }
+
       final notification = message.notification;
       if (notification == null) return;
+
       final threadId = message.data['threadId'] as String?;
       if (threadId != null && threadId == currentThreadId) return;
+
       show(
         notification.title ?? 'Jerry',
         notification.body ?? '',

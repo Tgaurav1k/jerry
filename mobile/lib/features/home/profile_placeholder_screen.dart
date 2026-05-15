@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:jerry_app/core/auth/session_bridge.dart';
 import 'package:jerry_app/core/network/api_client.dart';
 import 'package:jerry_app/core/theme/app_colors.dart';
 import 'package:jerry_app/features/onboarding/welcome_screen.dart';
@@ -36,6 +37,7 @@ class _ProfilePlaceholderScreenState extends ConsumerState<ProfilePlaceholderScr
       await ref.read(apiClientProvider).post('/auth/logout', data: {'refreshToken': refreshToken});
     } catch (_) {}
     await storage.clear();
+    SessionBridge.notifySessionCleared();
     if (!mounted) return;
     context.go(WelcomeScreen.routePath);
   }

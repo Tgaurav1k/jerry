@@ -11,6 +11,7 @@ import 'package:jerry_app/core/theme/app_colors.dart';
 import 'package:jerry_app/features/admin/admin_shell_screen.dart';
 import 'package:jerry_app/features/auth/license_upload_screen.dart';
 import 'package:jerry_app/features/auth/signup_screen.dart';
+import 'package:jerry_app/features/chat/chat_provider.dart';
 import 'package:jerry_app/features/onboarding/welcome_screen.dart';
 import 'package:jerry_app/features/shell/lawyer_shell_screen.dart';
 import 'package:jerry_app/features/shell/user_shell_screen.dart';
@@ -88,6 +89,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         role: role,
         userId: userId,
       );
+
+      ref.read(socketServiceProvider).disconnect();
+      ref.invalidate(chatProvider);
 
       // Register FCM token
       final fcmToken = await NotificationService.getFcmToken();

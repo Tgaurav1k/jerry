@@ -11,6 +11,7 @@ import 'package:jerry_app/core/network/api_client.dart';
 import 'package:jerry_app/core/notifications/notification_service.dart';
 import 'package:jerry_app/core/theme/app_colors.dart';
 import 'package:jerry_app/features/auth/license_upload_screen.dart';
+import 'package:jerry_app/features/chat/chat_provider.dart';
 import 'package:jerry_app/features/shell/user_shell_screen.dart';
 
 class OtpArgs {
@@ -119,6 +120,9 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
         role:         role,
         userId:       userId,
       );
+
+      ref.read(socketServiceProvider).disconnect();
+      ref.invalidate(chatProvider);
 
       // Register FCM token now that we have credentials
       NotificationService.getFcmToken().then((fcmToken) async {

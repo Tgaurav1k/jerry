@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_callkit_incoming/entities/entities.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:jerry_app/core/call/callkit_service.dart';
 import 'package:jerry_app/core/network/api_client.dart';
 import 'package:jerry_app/core/theme/app_colors.dart';
 import 'package:jerry_app/features/call/video_call_screen.dart';
@@ -32,7 +34,90 @@ class _LawyerShellScreenState extends ConsumerState<LawyerShellScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _connectSocket());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _connectSocket();
+      _registerCallKit();
+    });
+  }
+
+  void _registerCallKit() {
+    CallKitService.instance.registerEventListener((event) async {
+      if (!mounted) return;
+      final body = event.body as Map?;
+      final extra = (body?['extra'] as Map?) ?? {};
+      final consultationId = (body?['id'] ?? '').toString();
+      if (consultationId.isEmpty) return;
+
+      switch (event.event) {
+        case Event.actionCallAccept:
+          await _onCallKitAccept(
+            consultationId: consultationId,
+            callerId:       (extra['callerId'] ?? '').toString(),
+            callerName:     (body?['nameCaller'] ?? 'Client').toString(),
+            callType:       (extra['callType'] ?? 'VIDEO').toString(),
+            channelName:    (extra['channelName'] ?? '').toString(),
+            token:          (extra['token'] ?? '').toString(),
+            uid:            int.tryParse((extra['uid'] ?? '0').toString()) ?? 0,
+          );
+          break;
+        case Event.actionCallDecline:
+        case Event.actionCallTimeout:
+          try {
+            await ref.read(apiClientProvider)
+                .post('/call/$consultationId/reject');
+          } catch (_) {}
+          break;
+        default:
+          break;
+      }
+    });
+  }
+
+  Future<void> _onCallKitAccept({
+    required String consultationId,
+    required String callerId,
+    required String callerName,
+    required String callType,
+    required String channelName,
+    required String token,
+    required int    uid,
+  }) async {
+    try {
+      final resp = await ref.read(apiClientProvider)
+          .post('/call/$consultationId/accept');
+      final d2 = resp['data'] as Map<String, dynamic>;
+      if (!mounted) return;
+
+      if (callerId.isNotEmpty) {
+        final myId = await ref.read(tokenStorageProvider).getUserId() ?? '';
+        if (!mounted) return;
+        final threadId = ChatNotifier.computeThreadId(myId, callerId);
+        ref.read(chatProvider.notifier).ensureThread(
+          threadId: threadId,
+          peerId:   callerId,
+          peerRole: 'USER',
+          peerName: callerName,
+        );
+        ref.read(chatProvider.notifier).trackCall(consultationId, threadId, callType);
+      }
+
+      if (!mounted) return;
+      await context.push(
+        VideoCallScreen.routePath,
+        extra: VideoCallArgs(
+          consultationId: consultationId,
+          channelId:      d2['agoraChannelName'] as String? ?? channelName,
+          token:          d2['agoraToken']       as String? ?? token,
+          uid:            (d2['uid'] as num?)?.toInt() ?? uid,
+          callType:       callType,
+          peerName:       callerName,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Accept failed: $e')));
+    }
   }
 
   Future<void> _connectSocket() async {
@@ -45,6 +130,7 @@ class _LawyerShellScreenState extends ConsumerState<LawyerShellScreen> {
     } catch (_) {}
 
     final sock = await socket.connect();
+    if (sock == null) return;
 
     sock.on('connect', (_) {
       if (!mounted) return;
@@ -145,6 +231,7 @@ class _LawyerShellScreenState extends ConsumerState<LawyerShellScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final chatUnread = ref.watch(chatProvider.select((s) => s.totalChatUnread));
     return Scaffold(
       backgroundColor: AppColors.surface,
       extendBody: true,
@@ -161,6 +248,7 @@ class _LawyerShellScreenState extends ConsumerState<LawyerShellScreen> {
       bottomNavigationBar: FloatingGlassBottomNav(
         currentIndex: _index,
         onTap: (i) => setState(() => _index = i),
+        tabBadgeCounts: [0, chatUnread, 0, 0],
         items: const [
           FloatingNavItem(LucideIcons.layoutDashboard, 'Home'),
           FloatingNavItem(LucideIcons.messageSquare, 'Chats'),

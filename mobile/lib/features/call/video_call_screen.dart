@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:agora_rtc_engine/agora_rtc_engine.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -43,6 +45,11 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
   bool _muted   = false;
   String? _error;
 
+  // Auto-cancel the call if the other party doesn't answer in time.
+  // Must match the lawyer-side IncomingCallOverlay timeout (45s).
+  static const Duration _noAnswerTimeout = Duration(seconds: 45);
+  Timer? _noAnswerTimer;
+
   // Named handlers — we must remove ONLY these, not all socket listeners
   late final void Function(dynamic) _rejectedHandler;
   late final void Function(dynamic) _endedHandler;
@@ -79,6 +86,10 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
 
     // Register only our own handlers so dispose() can remove just them
     final socket = await ref.read(socketServiceProvider).connect();
+    if (socket == null) {
+      setState(() => _error = 'Session expired. Please sign in again.');
+      return;
+    }
     socket.on('call:rejected', _rejectedHandler);
     socket.on('call:ended',    _endedHandler);
 
@@ -96,11 +107,18 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
           if (mounted) setState(() => _joined = true);
         },
         onUserJoined: (_, remoteUid, _) {
+          // Peer picked up — cancel the no-answer fallback.
+          _noAnswerTimer?.cancel();
+          _noAnswerTimer = null;
           if (mounted) setState(() => _remoteUids.add(remoteUid));
         },
         onUserOffline: (_, remoteUid, _) {
           if (mounted) setState(() => _remoteUids.remove(remoteUid));
         },
+        // Fires ~30 s before the current Agora token expires.
+        // We mint a fresh one from the backend and hand it back to the engine
+        // so calls longer than 1 hour don't get force-disconnected.
+        onTokenPrivilegeWillExpire: (_, _) => _refreshAgoraToken(),
         onError: (code, msg) {
           if (mounted) setState(() => _error = 'Agora error $code: $msg');
         },
@@ -119,11 +137,52 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
       ),
     );
 
+    // Start the no-answer timer. Cancelled when the remote peer joins, when
+    // we hang up, when call:rejected / call:ended arrives, or on dispose.
+    _noAnswerTimer = Timer(_noAnswerTimeout, _onNoAnswer);
+
     if (mounted) setState(() {});
+  }
+
+  Future<void> _refreshAgoraToken() async {
+    final engine = _engine;
+    if (engine == null) return;
+    try {
+      final resp = await ref.read(apiClientProvider)
+          .post('/call/${widget.args.consultationId}/token');
+      final data = resp['data'] as Map<String, dynamic>?;
+      final fresh = data?['agoraToken'] as String?;
+      if (fresh == null || fresh.isEmpty) return;
+      await engine.renewToken(fresh);
+    } catch (_) {
+      // Renewal failed — Agora will surface its own onError when the
+      // current token actually expires; we don't need to crash the call here.
+    }
+  }
+
+  Future<void> _onNoAnswer() async {
+    if (!mounted || _remoteUids.isNotEmpty) return;
+    // Same teardown path as hang-up, but surfaces a "No answer" message.
+    final socket = ref.read(socketServiceProvider).socket;
+    socket?.off('call:rejected', _rejectedHandler);
+    socket?.off('call:ended',    _endedHandler);
+    try {
+      await ref.read(apiClientProvider).post('/call/${widget.args.consultationId}/end');
+    } catch (_) {}
+    await _engine?.leaveChannel();
+    await _engine?.release();
+    _engine = null;
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    Navigator.of(context).pop();
+    messenger?.showSnackBar(const SnackBar(content: Text('No answer.')));
   }
 
   void _onRemoteEnd(String? message) {
     if (!mounted) return;
+    _noAnswerTimer?.cancel();
+    _noAnswerTimer = null;
+    final messenger = message != null ? ScaffoldMessenger.maybeOf(context) : null;
     _engine?.leaveChannel();
     _engine?.release();
     _engine = null;
@@ -131,12 +190,14 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
     socket?.off('call:rejected', _rejectedHandler);
     socket?.off('call:ended',    _endedHandler);
     Navigator.of(context).pop();
-    if (message != null) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    if (message != null && messenger != null) {
+      messenger.showSnackBar(SnackBar(content: Text(message)));
     }
   }
 
   Future<void> _hangUp() async {
+    _noAnswerTimer?.cancel();
+    _noAnswerTimer = null;
     // Remove our listeners before posting end, so the returning call:ended
     // event is handled only by chat_provider (for the call bubble)
     final socket = ref.read(socketServiceProvider).socket;
@@ -159,6 +220,7 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
 
   @override
   void dispose() {
+    _noAnswerTimer?.cancel();
     final socket = ref.read(socketServiceProvider).socket;
     socket?.off('call:rejected', _rejectedHandler);
     socket?.off('call:ended',    _endedHandler);
