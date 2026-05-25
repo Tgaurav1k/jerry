@@ -77,17 +77,18 @@ class _LawyerDetailScreenState extends ConsumerState<LawyerDetailScreen> {
       );
 
       if (missed) {
+        // Backend now only flags `missed` when the lawyer is on another
+        // active call. Offline lawyers ring through the normal path.
         ref.read(chatProvider.notifier).addMissedCallBubble(
           threadId: threadId,
           callType: 'VIDEO',
         );
+        final reason = (data['reason'] as String?) ?? 'busy';
+        final msg = reason == 'busy'
+            ? '${widget.lawyer.fullName} is on another call. They will see a missed call.'
+            : '${widget.lawyer.fullName} could not be reached. They will see a missed call.';
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '${widget.lawyer.fullName} is currently unavailable. They will see a missed call.',
-            ),
-            duration: const Duration(seconds: 4),
-          ),
+          SnackBar(content: Text(msg), duration: const Duration(seconds: 4)),
         );
         return;
       }

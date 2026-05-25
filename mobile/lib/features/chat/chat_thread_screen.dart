@@ -136,18 +136,20 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
 
       if (!mounted) return;
 
-      // Lawyer was offline / busy — show missed call bubble immediately
+      // Backend now only flags `missed` when the lawyer is on another active
+      // call. Offline lawyers ring through the normal path and time out
+      // server-side after 45s.
       if (missed) {
         ref.read(chatProvider.notifier).addMissedCallBubble(
           threadId: _threadId,
           callType: type,
         );
+        final reason = (data['reason'] as String?) ?? 'busy';
+        final msg = reason == 'busy'
+            ? '${widget.args.peerName} is on another call. They will see a missed call.'
+            : '${widget.args.peerName} could not be reached. They will see a missed call.';
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '${widget.args.peerName} is currently unavailable. They will see a missed call.'),
-            duration: const Duration(seconds: 4),
-          ),
+          SnackBar(content: Text(msg), duration: const Duration(seconds: 4)),
         );
         return;
       }

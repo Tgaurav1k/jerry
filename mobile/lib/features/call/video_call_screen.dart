@@ -45,9 +45,11 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
   bool _muted   = false;
   String? _error;
 
-  // Auto-cancel the call if the other party doesn't answer in time.
-  // Must match the lawyer-side IncomingCallOverlay timeout (45s).
-  static const Duration _noAnswerTimeout = Duration(seconds: 45);
+  // Client-side safety net only. The server owns the authoritative ring
+  // timeout (45s) and fires call:ended with reason: 'no_answer'. We wait a
+  // bit longer here so the server's MISSED-call recording wins the race if
+  // the network delays the event.
+  static const Duration _noAnswerTimeout = Duration(seconds: 55);
   Timer? _noAnswerTimer;
 
   // Named handlers — we must remove ONLY these, not all socket listeners
@@ -60,7 +62,15 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
   void initState() {
     super.initState();
     _rejectedHandler = (_) => _onRemoteEnd('Call declined.');
-    _endedHandler    = (_) => _onRemoteEnd(null);
+    _endedHandler    = (data) {
+      // Server fires call:ended with reason: 'no_answer' when the 45s ring
+      // timer expires without an accept. Show appropriate copy.
+      String? msg;
+      if (data is Map && data['reason'] == 'no_answer') {
+        msg = 'No answer.';
+      }
+      _onRemoteEnd(msg);
+    };
     WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrap());
   }
 
