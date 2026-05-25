@@ -39,6 +39,7 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
   final _input      = TextEditingController();
   final _scrollCtrl = ScrollController();
   String? _myId;
+  String? _myRole;
   late String _threadId;
   bool _peerOnline = false;
   Timer? _presenceTimer;
@@ -72,7 +73,9 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
   }
 
   Future<void> _init() async {
-    _myId = await ref.read(tokenStorageProvider).getUserId();
+    final storage = ref.read(tokenStorageProvider);
+    _myId   = await storage.getUserId();
+    _myRole = await storage.getRole();
     if (_myId == null) return;
 
     _threadId = ChatNotifier.computeThreadId(_myId!, widget.args.peerId);
@@ -256,7 +259,10 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
       backgroundColor: AppColors.slate50,
       appBar: AppBar(
         leading: IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => context.pop()),
-        actions: widget.args.peerRole == 'LAWYER' ? [
+        // Call icons appear only when the LOGGED-IN account is a USER and the
+        // peer is a LAWYER. Backend rejects /call/initiate from any other role
+        // ("Forbidden resource"); hiding the icons prevents that error.
+        actions: (_myRole == 'USER' && widget.args.peerRole == 'LAWYER') ? [
           IconButton(
             icon: _callLoading
                 ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))
