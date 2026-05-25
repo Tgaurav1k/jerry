@@ -22,13 +22,21 @@ class SplashScreen extends ConsumerStatefulWidget {
 }
 
 class _SplashScreenState extends ConsumerState<SplashScreen> {
+  /// Hard ceiling on the splash. If anything (storage, network) takes longer
+  /// than this, fall back to Welcome so the user never sits on the logo.
+  static const Duration _maxSplash = Duration(seconds: 6);
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await Future<void>.delayed(const Duration(milliseconds: 1800));
+      // Shorter intro so the UI feels responsive on real devices.
+      await Future<void>.delayed(const Duration(milliseconds: 600));
       if (!mounted) return;
-      await _navigate();
+      // Race _navigate against a fallback to Welcome. Whichever wins, route.
+      await _navigate().timeout(_maxSplash, onTimeout: () {
+        if (mounted) context.go(WelcomeScreen.routePath);
+      });
     });
   }
 
@@ -43,10 +51,26 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
     } catch (_) {}
   }
 
-  Future<void> _navigate() async {
+  /// Reads token + role with defensive try/catch. flutter_secure_storage
+  /// can throw on Android after uninstall/reinstall when the AndroidKeyStore
+  /// entry is gone but the encrypted blob in shared prefs is still there.
+  Future<({String? token, String? role})> _readSession() async {
     final storage = ref.read(tokenStorageProvider);
-    final token   = await storage.getAccessToken();
-    final role    = await storage.getRole();
+    try {
+      final token = await storage.getAccessToken();
+      final role  = await storage.getRole();
+      return (token: token, role: role);
+    } catch (_) {
+      // Wipe whatever's in storage so the next launch starts clean.
+      try { await storage.clear(); } catch (_) {}
+      return (token: null, role: null);
+    }
+  }
+
+  Future<void> _navigate() async {
+    final session = await _readSession();
+    final token = session.token;
+    final role  = session.role;
 
     if (token == null || token.isEmpty || role == null) {
       if (mounted) context.go(WelcomeScreen.routePath);
@@ -63,7 +87,9 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
     if (role == 'LAWYER') {
       try {
         final api  = ref.read(apiClientProvider);
-        final resp = await api.get('/lawyers/me');
+        // Bounded so a slow / cold-starting backend never stalls the splash.
+        final resp = await api.get('/lawyers/me')
+            .timeout(const Duration(seconds: 5));
         final data = resp['data'] as Map<String, dynamic>;
         final status = data['verificationStatus'] as String? ?? 'PENDING_UPLOAD';
 
@@ -76,6 +102,8 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
           context.go(UnderReviewScreen.routePath, extra: status);
         }
       } catch (_) {
+        // Network / timeout / 401: fall back to LicenseUpload (lawyer's
+        // verification-aware first screen). Worst case they re-login.
         if (mounted) context.go(LicenseUploadScreen.routePath);
       }
     } else {
