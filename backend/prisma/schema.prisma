@@ -185,6 +185,17 @@ model ChatMessage {
   callDurationSeconds Int?
   createdAt           DateTime @default(now())
 
+  // Soft-delete flags (WhatsApp-style)
+  // - deletedForAll: sender hit "Delete for everyone" within the 2h window.
+  //   Row stays so the chronological order is preserved, but the content is
+  //   replaced by a tombstone on read.
+  // - hiddenForUser / hiddenForLawyer: per-side "Delete for me". The viewer
+  //   whose flag is set no longer sees this row in history.
+  deletedForAll       Boolean   @default(false)
+  deletedForAllAt     DateTime?
+  hiddenForUser       Boolean   @default(false)
+  hiddenForLawyer     Boolean   @default(false)
+
   @@index([threadId, createdAt(sort: Desc)])
   @@index([senderId, createdAt(sort: Desc)])
   @@index([recipientId, createdAt(sort: Desc)])

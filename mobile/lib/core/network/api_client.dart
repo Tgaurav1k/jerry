@@ -154,6 +154,11 @@ class ApiClient {
     return resp.data;
   }
 
+  Future<dynamic> delete(String path, {Map<String, dynamic>? params, dynamic data}) async {
+    final resp = await _dio.delete(path, queryParameters: params, data: data);
+    return resp.data;
+  }
+
   Future<dynamic> postForm(String path, FormData formData) async {
     final resp = await _dio.post(path, data: formData);
     return resp.data;

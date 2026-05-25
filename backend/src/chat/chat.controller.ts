@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { IsIn, IsString, MaxLength, MinLength } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
@@ -25,12 +25,16 @@ export class ChatController {
   ) {}
 
   // GET /chat/history?threadId=X&limit=50
+  // Viewer-scoped: rows the caller has "Deleted for me" are filtered out;
+  // "Deleted for everyone" rows are returned with empty content + a flag so
+  // the client can render a tombstone.
   @Get('history')
   getHistory(
+    @CurrentUser() user: JwtPayload,
     @Query('threadId') threadId: string,
     @Query('limit') limit?: string,
   ) {
-    return this.chat.getHistory(threadId, limit ? parseInt(limit, 10) : 50);
+    return this.chat.getHistory(threadId, user, limit ? parseInt(limit, 10) : 50);
   }
 
   // GET /chat/threads — last message per thread for this user
@@ -73,4 +77,63 @@ export class ChatController {
       meta: { timestamp: new Date().toISOString() },
     };
   }
+
+  // ─── Delete endpoints (WhatsApp-style) ──────────────────────────────────────
+
+  /// DELETE /chat/messages/:id?scope=me|all
+  /// scope=me  → "Delete for me" (hide only from caller's view)
+  /// scope=all → "Delete for everyone" (sender-only, within 2h)
+  @Delete('messages/:id')
+  async deleteMessage(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') messageId: string,
+    @Query('scope') scope: 'me' | 'all' = 'me',
+  ) {
+    if (scope === 'all') {
+      const res = await this.chat.deleteForAll(messageId, user);
+      // Tell both sides to render the tombstone in real time.
+      this.gateway.emitToUser(res.participants.userId, 'chat:deleted', {
+        messageId, threadId: res.threadId, scope: 'all',
+      });
+      this.gateway.emitToLawyer(res.participants.lawyerId, 'chat:deleted', {
+        messageId, threadId: res.threadId, scope: 'all',
+      });
+      return { success: true, data: res, meta: { timestamp: new Date().toISOString() } };
+    }
+    const res = await this.chat.deleteForMe(messageId, user);
+    // Only echo to the deleter so their other devices (if any) sync.
+    if (user.role === 'USER') {
+      this.gateway.emitToUser(user.sub, 'chat:deleted', {
+        messageId, threadId: res.threadId, scope: 'me',
+      });
+    } else if (user.role === 'LAWYER') {
+      this.gateway.emitToLawyer(user.sub, 'chat:deleted', {
+        messageId, threadId: res.threadId, scope: 'me',
+      });
+    }
+    return { success: true, data: res, meta: { timestamp: new Date().toISOString() } };
+  }
+
+  /// DELETE /chat/threads/:threadId
+  /// "Clear chat" — bulk hides every message in the thread from the caller's
+  /// view. The peer's view is untouched.
+  @Delete('threads/:threadId')
+  async clearThread(
+    @CurrentUser() user: JwtPayload,
+    @Param('threadId') threadId: string,
+  ) {
+    const res = await this.chat.clearChat(threadId, user);
+    // Echo to the caller so their other devices sync.
+    if (user.role === 'USER') {
+      this.gateway.emitToUser(user.sub, 'chat:thread_cleared', {
+        threadId, hiddenCount: res.hiddenCount,
+      });
+    } else if (user.role === 'LAWYER') {
+      this.gateway.emitToLawyer(user.sub, 'chat:thread_cleared', {
+        threadId, hiddenCount: res.hiddenCount,
+      });
+    }
+    return { success: true, data: res, meta: { timestamp: new Date().toISOString() } };
+  }
+
 }

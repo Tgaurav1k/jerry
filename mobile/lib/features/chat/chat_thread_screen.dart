@@ -59,6 +59,112 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
     super.dispose();
   }
 
+  // ─── Delete actions (WhatsApp-style) ──────────────────────────────────────
+
+  static const Duration _deleteForEveryoneWindow = Duration(hours: 2);
+
+  Future<void> _onMessageLongPress(ChatMessage m, bool isMe) async {
+    // Call records aren't deletable (legal audit requirement).
+    if (m.type == 'call') return;
+    // A tombstone bubble — nothing more to delete.
+    if (m.deletedForAll) return;
+    // Don't show the menu for outgoing messages that haven't been
+    // confirmed by the server yet — there's nothing on the server to delete.
+    if (m.isLocal && m.status == 'sending') return;
+
+    final canDeleteForEveryone = isMe &&
+        DateTime.now().difference(m.createdAt) < _deleteForEveryoneWindow;
+
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 36, height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.outlineVariant,
+                borderRadius: BorderRadius.circular(99),
+              ),
+            ),
+            const SizedBox(height: 12),
+            ListTile(
+              leading: const Icon(LucideIcons.trash2, color: AppColors.onSurface),
+              title: const Text('Delete for me'),
+              onTap: () => Navigator.of(context).pop('me'),
+            ),
+            if (canDeleteForEveryone)
+              ListTile(
+                leading: const Icon(LucideIcons.trash, color: AppColors.error),
+                title: const Text('Delete for everyone'),
+                subtitle: const Text('Removes from both sides'),
+                onTap: () => Navigator.of(context).pop('all'),
+              ),
+            ListTile(
+              leading: const Icon(LucideIcons.x, color: AppColors.secondary),
+              title: const Text('Cancel'),
+              onTap: () => Navigator.of(context).pop(),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (!mounted || action == null) return;
+
+    final notifier = ref.read(chatProvider.notifier);
+    final ok = action == 'all'
+        ? await notifier.deleteMessageForEveryone(m.id)
+        : await notifier.deleteMessageForMe(m.id);
+
+    if (!mounted) return;
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Couldn't delete. Try again.")),
+      );
+    }
+    // On success the server emits chat:deleted and the provider applies the
+    // tombstone / remove via _onDeleted; no local state push needed here.
+  }
+
+  Future<void> _confirmClearChat() async {
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Clear chat?'),
+        content: const Text(
+          'This will remove every message in this conversation from your view only. '
+          '${''}The other person\'s view is not affected.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: TextButton.styleFrom(foregroundColor: AppColors.error),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || go != true) return;
+    final ok = await ref.read(chatProvider.notifier).clearChat(_threadId);
+    if (!mounted) return;
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Couldn't clear chat. Try again.")),
+      );
+    }
+  }
+
   /// Polls the peer's online flag from /lawyers/:id. Cheap and good enough
   /// for the demo — sub-second freshness isn't required for a presence dot.
   Future<void> _refreshPeerPresence() async {
@@ -262,21 +368,40 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
         // Call icons appear only when the LOGGED-IN account is a USER and the
         // peer is a LAWYER. Backend rejects /call/initiate from any other role
         // ("Forbidden resource"); hiding the icons prevents that error.
-        actions: (_myRole == 'USER' && widget.args.peerRole == 'LAWYER') ? [
-          IconButton(
-            icon: _callLoading
-                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))
-                : const Icon(LucideIcons.phone, size: 20),
-            tooltip: 'Voice call',
-            onPressed: _callLoading ? null : () => _startCall('VOICE'),
-          ),
-          IconButton(
-            icon: const Icon(LucideIcons.video, size: 20),
-            tooltip: 'Video call',
-            onPressed: _callLoading ? null : () => _startCall('VIDEO'),
+        actions: [
+          if (_myRole == 'USER' && widget.args.peerRole == 'LAWYER') ...[
+            IconButton(
+              icon: _callLoading
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))
+                  : const Icon(LucideIcons.phone, size: 20),
+              tooltip: 'Voice call',
+              onPressed: _callLoading ? null : () => _startCall('VOICE'),
+            ),
+            IconButton(
+              icon: const Icon(LucideIcons.video, size: 20),
+              tooltip: 'Video call',
+              onPressed: _callLoading ? null : () => _startCall('VIDEO'),
+            ),
+          ],
+          PopupMenuButton<String>(
+            icon: const Icon(LucideIcons.moreVertical, size: 20),
+            tooltip: 'More',
+            onSelected: (v) {
+              if (v == 'clear') _confirmClearChat();
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: 'clear',
+                child: Row(children: [
+                  Icon(LucideIcons.eraser, size: 18, color: AppColors.error),
+                  SizedBox(width: 12),
+                  Text('Clear chat'),
+                ]),
+              ),
+            ],
           ),
           const SizedBox(width: 4),
-        ] : null,
+        ],
         title: GestureDetector(
           onTap: _profileLoading ? null : _openProfile,
           behavior: HitTestBehavior.opaque,
@@ -347,10 +472,14 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
                       controller: _scrollCtrl,
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                       itemCount: messages.length,
-                      itemBuilder: (context, i) => _MessageBubble(
-                        message: messages[i],
-                        isMe: messages[i].senderId == _myId,
-                      ),
+                      itemBuilder: (context, i) {
+                        final m    = messages[i];
+                        final isMe = m.senderId == _myId;
+                        return GestureDetector(
+                          onLongPress: () => _onMessageLongPress(m, isMe),
+                          child: _MessageBubble(message: m, isMe: isMe),
+                        );
+                      },
                     ),
         ),
         Material(
@@ -403,6 +532,7 @@ class _MessageBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (message.type == 'call') return _buildCallBubble();
+    if (message.deletedForAll) return _buildTombstone(context);
 
     final time   = DateFormat('HH:mm').format(message.createdAt.toLocal());
     final status = message.status;
@@ -432,6 +562,45 @@ class _MessageBubble extends StatelessWidget {
               _buildTick(status),
             ],
           ]),
+        ]),
+      ),
+    );
+  }
+
+  /// Rendered when the sender ran "Delete for everyone". The row stays in
+  /// place so chronology is preserved, but the original content is gone and
+  /// replaced with an italic "This message was deleted" placeholder.
+  Widget _buildTombstone(BuildContext context) {
+    final time = DateFormat('HH:mm').format(message.createdAt.toLocal());
+    return Align(
+      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * 0.75),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(16).copyWith(
+            bottomRight: isMe  ? const Radius.circular(4) : null,
+            bottomLeft:  !isMe ? const Radius.circular(4) : null,
+          ),
+          border: Border.all(color: AppColors.outlineVariant),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(LucideIcons.ban, size: 14, color: AppColors.outline),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              'This message was deleted',
+              style: TextStyle(
+                color: AppColors.outline,
+                fontStyle: FontStyle.italic,
+                fontSize: 13,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(time, style: const TextStyle(fontSize: 11, color: AppColors.outline)),
         ]),
       ),
     );

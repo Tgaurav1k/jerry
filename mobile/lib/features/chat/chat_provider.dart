@@ -19,6 +19,7 @@ class ChatMessage {
     this.callType,
     this.callStatus,
     this.callDurationSeconds,
+    this.deletedForAll = false,
   });
 
   final String   id;
@@ -34,6 +35,9 @@ class ChatMessage {
   final String?  callType;           // 'VIDEO' | 'VOICE'
   final String?  callStatus;         // 'completed' | 'missed' | 'declined'
   final int?     callDurationSeconds;
+  /// True if the sender ran "Delete for everyone" within the 2h window.
+  /// The bubble renders as a tombstone instead of showing content.
+  bool deletedForAll;
 
   bool get isLocal => id.startsWith('local-');
 
@@ -51,6 +55,7 @@ class ChatMessage {
         callType:             m['callType'] as String?,
         callStatus:           m['callStatus'] as String?,
         callDurationSeconds:  (m['callDurationSeconds'] as num?)?.toInt(),
+        deletedForAll:        m['deletedForAll'] == true,
       );
 }
 
@@ -153,11 +158,13 @@ class ChatNotifier extends StateNotifier<ChatState> {
       _myId = await idFuture;
       return;
     }
-    sock.on('chat:message',  _onMessage);
-    sock.on('chat:sent',     _onSent);
-    sock.on('chat:read_ack', _onReadAck);
-    sock.on('call:ended',    _onCallEnded);
-    sock.on('call:rejected', _onCallRejected);
+    sock.on('chat:message',         _onMessage);
+    sock.on('chat:sent',            _onSent);
+    sock.on('chat:read_ack',        _onReadAck);
+    sock.on('chat:deleted',         _onDeleted);
+    sock.on('chat:thread_cleared',  _onThreadCleared);
+    sock.on('call:ended',           _onCallEnded);
+    sock.on('call:rejected',        _onCallRejected);
 
     _myId = await idFuture;
     if (_myId != null && _myId!.isNotEmpty) {
@@ -342,6 +349,73 @@ class ChatNotifier extends StateNotifier<ChatState> {
     state = state.copyWith(threads: threads);
   }
 
+  /// Server says a message was deleted. For scope='all' both sides receive
+  /// this; for scope='me' only the deleter's other devices receive it.
+  void _onDeleted(dynamic raw) {
+    final data = Map<String, dynamic>.from(raw as Map);
+    final messageId = data['messageId'] as String?;
+    final threadId  = data['threadId']  as String?;
+    final scope     = data['scope']     as String? ?? 'all';
+    if (messageId == null || threadId == null) return;
+    final threads = Map<String, ChatThread>.from(state.threads);
+    final thread  = threads[threadId];
+    if (thread == null) return;
+
+    if (scope == 'me') {
+      // Remove entirely from this client's state.
+      final msgs = thread.messages.where((m) => m.id != messageId).toList();
+      threads[threadId] = thread.copyWith(messages: msgs);
+    } else {
+      // Tombstone in place.
+      final msgs = thread.messages.map((m) {
+        if (m.id == messageId) m.deletedForAll = true;
+        return m;
+      }).toList();
+      threads[threadId] = thread.copyWith(messages: msgs);
+    }
+    state = state.copyWith(threads: threads);
+  }
+
+  /// Server confirms a "Clear chat" sweep. The deleter's view drops every
+  /// message in this thread. Other side is untouched on their device.
+  void _onThreadCleared(dynamic raw) {
+    final data = Map<String, dynamic>.from(raw as Map);
+    final threadId = data['threadId'] as String?;
+    if (threadId == null) return;
+    final threads = Map<String, ChatThread>.from(state.threads);
+    final thread  = threads[threadId];
+    if (thread == null) return;
+    threads[threadId] = thread.copyWith(messages: []);
+    state = state.copyWith(threads: threads);
+  }
+
+  Future<bool> deleteMessageForMe(String messageId) async {
+    try {
+      await _api.delete('/chat/messages/$messageId', params: {'scope': 'me'});
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> deleteMessageForEveryone(String messageId) async {
+    try {
+      await _api.delete('/chat/messages/$messageId', params: {'scope': 'all'});
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> clearChat(String threadId) async {
+    try {
+      await _api.delete('/chat/threads/$threadId');
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   void setPeerName(String threadId, String name) {
     final threads = Map<String, ChatThread>.from(state.threads);
     final thread  = threads[threadId];
@@ -484,11 +558,13 @@ class ChatNotifier extends StateNotifier<ChatState> {
   void dispose() {
     final s = _socket.socket;
     if (s != null) {
-      s.off('chat:message', _onMessage);
-      s.off('chat:sent', _onSent);
-      s.off('chat:read_ack', _onReadAck);
-      s.off('call:ended', _onCallEnded);
-      s.off('call:rejected', _onCallRejected);
+      s.off('chat:message',        _onMessage);
+      s.off('chat:sent',           _onSent);
+      s.off('chat:read_ack',       _onReadAck);
+      s.off('chat:deleted',        _onDeleted);
+      s.off('chat:thread_cleared', _onThreadCleared);
+      s.off('call:ended',          _onCallEnded);
+      s.off('call:rejected',       _onCallRejected);
     }
     super.dispose();
   }
