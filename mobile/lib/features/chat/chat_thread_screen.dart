@@ -231,14 +231,20 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
   bool _callLoading    = false;
 
   Future<void> _startCall(String type) async {
-    if (widget.args.peerRole != 'LAWYER') return;
+    // Either side (USER or LAWYER) can call the other — block only same-role.
+    if (widget.args.peerRole == _myRole) return;
     setState(() => _callLoading = true);
     try {
       final api  = ref.read(apiClientProvider);
-      final resp = await api.post('/call/initiate', data: {
-        'lawyerId': widget.args.peerId,
-        'type':     type,
-      });
+      // Field-name shim: for USER->LAWYER calls (the only direction the
+      // legacy production backend supports) send `lawyerId` so we work against
+      // both old and refactored backends. For LAWYER->USER (new feature) send
+      // the new fields — old backend will reject, that's expected until it's
+      // redeployed.
+      final Map<String, dynamic> body = (widget.args.peerRole == 'LAWYER')
+          ? {'lawyerId': widget.args.peerId, 'type': type}
+          : {'recipientId': widget.args.peerId, 'recipientRole': widget.args.peerRole, 'type': type};
+      final resp = await api.post('/call/initiate', data: body);
       final data           = resp['data'] as Map<String, dynamic>;
       final consultationId = data['consultationId'] as String;
       final missed         = data['missed'] as bool? ?? false;
@@ -365,11 +371,11 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
       backgroundColor: AppColors.slate50,
       appBar: AppBar(
         leading: IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => context.pop()),
-        // Call icons appear only when the LOGGED-IN account is a USER and the
-        // peer is a LAWYER. Backend rejects /call/initiate from any other role
-        // ("Forbidden resource"); hiding the icons prevents that error.
+        // Call icons appear whenever the logged-in account and the peer are
+        // opposite roles (USER<->LAWYER). Backend now supports bidirectional
+        // calls; same-role peers (e.g. lawyer-to-lawyer) cannot call.
         actions: [
-          if (_myRole == 'USER' && widget.args.peerRole == 'LAWYER') ...[
+          if (_myRole != null && _myRole != widget.args.peerRole) ...[
             IconButton(
               icon: _callLoading
                   ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))
@@ -439,18 +445,30 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
               ],
             ),
             const SizedBox(width: 10),
-            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(widget.args.peerName),
-              if (widget.args.peerRole == 'LAWYER')
-                Text(
-                  _peerOnline ? 'Online' : 'Tap to view profile',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: _peerOnline ? AppColors.onlineGreen : AppColors.secondary,
-                    fontWeight: _peerOnline ? FontWeight.w600 : FontWeight.w400,
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    widget.args.peerName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                ),
-            ]),
+                  if (widget.args.peerRole == 'LAWYER')
+                    Text(
+                      _peerOnline ? 'Online' : 'Tap to view profile',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: _peerOnline ? AppColors.onlineGreen : AppColors.secondary,
+                        fontWeight: _peerOnline ? FontWeight.w600 : FontWeight.w400,
+                      ),
+                    ),
+                ],
+              ),
+            ),
           ]),
         ),
       ),

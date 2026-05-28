@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -25,6 +26,14 @@ const BUSY_KEY = (lawyerId: string) => `call:busy:${lawyerId}`;
 const BUSY_TTL_SECONDS = 60 * 65; // 65 min — slightly above Agora token's 1h
 const RING_TIMEOUT_MS = 45_000;   // matches mobile IncomingCallOverlay timeout
 
+/**
+ * Who initiated the consultation. Kept in Redis (not the DB) so we don't need
+ * a schema migration. Used by accept/reject to forbid the caller from
+ * accepting their own call, and to know which side is the recipient when
+ * routing end-of-call socket events.
+ */
+const INITIATOR_KEY = (consultationId: string) => `call:initiator:${consultationId}`;
+
 @Injectable()
 export class CallService {
   constructor(
@@ -36,24 +45,52 @@ export class CallService {
     private readonly redis: RedisService,
   ) {}
 
-  /// Ring the lawyer regardless of online state (WhatsApp-style).
-  ///
-  /// - If lawyer is already on another call (Redis lock held) → immediate MISSED.
-  /// - Otherwise create RINGING consultation, issue Agora tokens, broadcast
-  ///   call:incoming via socket (reaches them if their app is foregrounded
-  ///   right now) AND send data-only FCM push to ALL device sessions (wakes
-  ///   the app via CallKit even if killed). Caller's screen rings for 45s.
-  /// - A server-side timer marks the call MISSED at T+45s if not accepted.
-  async initiate(user: JwtPayload, lawyerId: string, type: 'VIDEO' | 'VOICE') {
-    if (user.role !== 'USER') throw new ForbiddenException('Only clients can start calls');
+  /**
+   * Ring the recipient regardless of online state (WhatsApp-style).
+   *
+   * Either side (USER or LAWYER) may initiate. The lawyer-busy lock is held
+   * regardless of who started the call, because lawyer-availability is the
+   * scarce resource.
+   *
+   * Delivery: live socket (foregrounded app) + data-only FCM push (CallKit
+   * ring even when killed). A server-side 45s timer marks the call MISSED if
+   * not accepted in time.
+   */
+  async initiate(
+    caller: JwtPayload,
+    recipientId: string,
+    recipientRole: 'USER' | 'LAWYER',
+    type: 'VIDEO' | 'VOICE',
+  ) {
+    if (caller.role !== 'USER' && caller.role !== 'LAWYER') {
+      throw new ForbiddenException();
+    }
+    if (caller.role === recipientRole) {
+      throw new BadRequestException('Cannot call a peer of the same role');
+    }
+    if (caller.sub === recipientId) {
+      throw new BadRequestException('Cannot call yourself');
+    }
+
+    // Resolve the user/lawyer side of the consultation regardless of who
+    // initiated. The Consultation table is bound by role columns.
+    const userId   = caller.role === 'USER'   ? caller.sub : recipientId;
+    const lawyerId = caller.role === 'LAWYER' ? caller.sub : recipientId;
 
     const lawyer = await this.prisma.lawyer.findUnique({ where: { id: lawyerId } });
     if (!lawyer || lawyer.isSuspended || lawyer.verificationStatus !== 'APPROVED') {
       throw new NotFoundException('Lawyer not found');
     }
+    const userRow = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!userRow || userRow.isSuspended) {
+      throw new NotFoundException('User not found');
+    }
+
     const consultationType: ConsultationType = type === 'VIDEO' ? 'VIDEO' : 'VOICE';
-    const client = await this.prisma.user.findUnique({ where: { id: user.sub } });
-    const callerName = client?.fullName ?? 'Client';
+    const callerRecord = caller.role === 'USER' ? userRow : lawyer;
+    const callerName = (callerRecord as { fullName?: string })?.fullName
+      ?? (caller.role === 'USER' ? 'Client' : 'Lawyer');
+    const callerPhotoUrl = (callerRecord as { profilePhotoUrl?: string | null })?.profilePhotoUrl ?? null;
 
     // Reserve the lawyer atomically. Only reject the call if another active
     // call already holds the lock — being "offline" no longer blocks ringing.
@@ -64,13 +101,13 @@ export class CallService {
       // Lawyer is genuinely busy on another call.
       const row = await this.prisma.consultation.create({
         data: {
-          userId: user.sub,
+          userId,
           lawyerId,
           type: consultationType,
           status: ConsultationStatus.MISSED,
         },
       });
-      await this.chat.saveMissedCall(user.sub, lawyerId, row.id, type);
+      await this.chat.saveMissedCall(userId, lawyerId, row.id, type);
       return {
         success: true,
         data: { consultationId: row.id, missed: true, reason: 'busy' },
@@ -80,7 +117,7 @@ export class CallService {
 
     const row = await this.prisma.consultation.create({
       data: {
-        userId: user.sub,
+        userId,
         lawyerId,
         type: consultationType,
         status: ConsultationStatus.RINGING,
@@ -91,42 +128,51 @@ export class CallService {
     // Update the lock with the actual consultation id (still under TTL)
     await this.redis.set(BUSY_KEY(lawyerId), row.id, BUSY_TTL_SECONDS);
 
-    const userUid = agoraUidFromString(user.sub);
-    const lawyerUid = agoraUidFromString(lawyerId);
-    const userToken = this.agora.buildRtcToken(channelName, userUid);
-    const lawyerToken = this.agora.buildRtcToken(channelName, lawyerUid);
+    // Record the initiator so accept/reject can forbid the caller from
+    // accepting their own call. TTL slightly above the ring timeout — once
+    // ACTIVE, we extend it via the BUSY lock anyway.
+    await this.redis.set(INITIATOR_KEY(row.id), caller.role, BUSY_TTL_SECONDS);
 
-    // 1. Live socket broadcast — hits the lawyer instantly IF their app is
-    //    foregrounded and the socket is connected. Targets the lawyer:{id}
-    //    room which all of their currently-connected devices have joined.
-    this.gateway.emitToLawyer(lawyerId, 'call:incoming', {
+    const callerUid    = agoraUidFromString(caller.sub);
+    const recipientUid = agoraUidFromString(recipientId);
+    const callerToken    = this.agora.buildRtcToken(channelName, callerUid);
+    const recipientToken = this.agora.buildRtcToken(channelName, recipientUid);
+
+    const incomingPayload = {
       consultationId: row.id,
-      callerId:       user.sub,
+      callerId:       caller.sub,
+      callerRole:     caller.role,
       channelName,
-      token:          lawyerToken,
-      uid:            lawyerUid,
+      token:          recipientToken,
+      uid:            recipientUid,
       callerName,
-      callerPhotoUrl: client?.profilePhotoUrl ?? null,
+      callerPhotoUrl,
       type:           consultationType,
-    });
+    };
 
-    // 2. Data-only FCM push fans out to every registered device session for
-    //    this lawyer. NotificationService.sendDataOnlyToLawyer already
-    //    multicasts to all tokens. CallKit picks this up and rings even from
-    //    a killed app state.
-    this.notifications.sendDataOnlyToLawyer(lawyerId, {
+    // Data payload for FCM must be Record<string, string>. Strip nullables.
+    const fcmData: Record<string, string> = {
       type:           'call:incoming',
       consultationId: row.id,
-      callerId:       user.sub,
+      callerId:       caller.sub,
+      callerRole:     caller.role,
       callerName,
       callType:       consultationType,
       channelName,
-      token:          lawyerToken,
-      uid:            String(lawyerUid),
-    }).catch(() => {});
+      token:          recipientToken,
+      uid:            String(recipientUid),
+    };
 
-    // 3. Schedule the no-answer timeout. If accept/reject lands within 45s,
-    //    those handlers clear the timer slot in `pendingTimeouts`.
+    if (recipientRole === 'LAWYER') {
+      this.gateway.emitToLawyer(recipientId, 'call:incoming', incomingPayload);
+      this.notifications.sendDataOnlyToLawyer(recipientId, fcmData).catch(() => {});
+    } else {
+      this.gateway.emitToUser(recipientId, 'call:incoming', incomingPayload);
+      this.notifications.sendDataOnlyToUser(recipientId, fcmData).catch(() => {});
+    }
+
+    // Schedule the no-answer timeout. If accept/reject lands within 45s,
+    // those handlers clear the timer slot in `pendingTimeouts`.
     this._scheduleRingTimeout(row.id);
 
     return {
@@ -134,8 +180,8 @@ export class CallService {
       data: {
         consultationId: row.id,
         agoraChannelName: channelName,
-        agoraToken: userToken,
-        uid: userUid,
+        agoraToken: callerToken,
+        uid: callerUid,
         ringTimeoutMs: RING_TIMEOUT_MS,
       },
       meta: { timestamp: new Date().toISOString() },
@@ -167,7 +213,7 @@ export class CallService {
   }
 
   /// Fires 45s after initiate. If the call is still RINGING, marks it MISSED
-  /// and tells everyone. If the lawyer accepted in the meantime, this is a
+  /// and tells everyone. If the recipient accepted in the meantime, this is a
   /// no-op (status will be ACTIVE or ENDED).
   private async _handleRingTimeout(consultationId: string) {
     this.pendingTimeouts.delete(consultationId);
@@ -180,52 +226,60 @@ export class CallService {
         data: { status: ConsultationStatus.MISSED },
       });
       await this.redis.del(BUSY_KEY(c.lawyerId));
+      await this.redis.del(INITIATOR_KEY(c.id));
 
-      // Insert the "missed call" bubble into the shared chat thread so both
-      // sides see it in history when they next open the chat.
+      // Insert the "missed call" bubble into the shared chat thread.
       await this.chat.saveCallRecord(
         c.userId, c.lawyerId, c.id,
         c.type as 'VIDEO' | 'VOICE',
         'missed', 0,
       ).catch(() => {});
 
-      // Caller's screen — close the ringing UI.
-      this.gateway.emitToUser(c.userId, 'call:ended', {
-        consultationId: c.id,
-        durationSeconds: 0,
-        reason: 'no_answer',
-      });
-      // Lawyer's screen if they happen to be in the app — dismiss the
-      // CallKit overlay if it's still showing.
-      this.gateway.emitToLawyer(c.lawyerId, 'call:ended', {
-        consultationId: c.id,
-        durationSeconds: 0,
-        reason: 'no_answer',
-      });
+      // Notify BOTH ends — whoever was ringing should drop their UI, and the
+      // missed-call side gets the system push.
+      const endedPayload = { consultationId: c.id, durationSeconds: 0, reason: 'no_answer' };
+      this.gateway.emitToUser(c.userId, 'call:ended', endedPayload);
+      this.gateway.emitToLawyer(c.lawyerId, 'call:ended', endedPayload);
 
-      // Push notification to the lawyer summarising the missed call so they
-      // see it when they open their phone later.
+      // Push the missed-call summary to whichever side didn't pick up. We
+      // don't know which side that was without re-reading the initiator, so
+      // push to both — clients dedupe by consultationId anyway.
+      const callerLabel = c.type === 'VIDEO' ? 'video' : 'voice';
       this.notifications.sendToLawyer(
         c.lawyerId,
-        `📞 Missed ${c.type === 'VIDEO' ? 'video' : 'voice'} call`,
+        `📞 Missed ${callerLabel} call`,
         `${(await this.prisma.user.findUnique({ where: { id: c.userId } }))?.fullName ?? 'A client'} tried to reach you`,
         { type: 'call:missed', consultationId: c.id },
       ).catch(() => {});
+      this.notifications.sendToUser(
+        c.userId,
+        `📞 Missed ${callerLabel} call`,
+        `${(await this.prisma.lawyer.findUnique({ where: { id: c.lawyerId } }))?.fullName ?? 'A lawyer'} tried to reach you`,
+        { type: 'call:missed', consultationId: c.id },
+      ).catch(() => {});
     } catch (e) {
-      // Best-effort — the next call.initiate or a manual cleanup will catch
-      // any stuck rows.
       console.error('[call timeout]', e);
     }
   }
 
   async accept(user: JwtPayload, consultationId: string) {
-    if (user.role !== 'LAWYER') throw new ForbiddenException();
-
     const c = await this.prisma.consultation.findUnique({
       where: { id: consultationId },
       include: { lawyer: true },
     });
-    if (!c || c.lawyerId !== user.sub) throw new NotFoundException();
+    if (!c) throw new NotFoundException();
+
+    // Caller must be a participant of this consultation.
+    const isUser   = user.role === 'USER'   && user.sub === c.userId;
+    const isLawyer = user.role === 'LAWYER' && user.sub === c.lawyerId;
+    if (!isUser && !isLawyer) throw new ForbiddenException();
+
+    // The initiator cannot accept their own call.
+    const initiatorRole = await this.redis.get(INITIATOR_KEY(consultationId));
+    if (initiatorRole && initiatorRole === user.role) {
+      throw new ConflictException("Caller cannot accept their own call");
+    }
+
     if (c.status !== ConsultationStatus.RINGING) {
       throw new ConflictException('Call not ringing');
     }
@@ -239,31 +293,42 @@ export class CallService {
     });
 
     const channelName = c.agoraChannelName ?? '';
-    const lawyerUid = agoraUidFromString(user.sub);
-    const lawyerToken = this.agora.buildRtcToken(channelName, lawyerUid);
+    const accepterUid = agoraUidFromString(user.sub);
+    const accepterToken = this.agora.buildRtcToken(channelName, accepterUid);
 
     return {
       success: true,
       data: {
         consultationId: c.id,
         agoraChannelName: channelName,
-        agoraToken: lawyerToken,
-        uid: lawyerUid,
+        agoraToken: accepterToken,
+        uid: accepterUid,
       },
       meta: { timestamp: new Date().toISOString() },
     };
   }
 
   async reject(user: JwtPayload, consultationId: string) {
-    if (user.role !== 'LAWYER') throw new ForbiddenException();
-
     const c = await this.prisma.consultation.findUnique({ where: { id: consultationId } });
-    if (!c || c.lawyerId !== user.sub) throw new NotFoundException();
+    if (!c) throw new NotFoundException();
+
+    const isUser   = user.role === 'USER'   && user.sub === c.userId;
+    const isLawyer = user.role === 'LAWYER' && user.sub === c.lawyerId;
+    if (!isUser && !isLawyer) throw new ForbiddenException();
+
+    // The initiator can also "cancel" via /end; rejecting is only for the
+    // recipient. But to keep the API forgiving, treat caller-side reject as
+    // an end too (covered by the /end path), and only allow real reject from
+    // the non-initiator here.
+    const initiatorRole = await this.redis.get(INITIATOR_KEY(consultationId));
+    if (initiatorRole && initiatorRole === user.role) {
+      throw new ConflictException("Caller cannot reject their own call — use /end to cancel");
+    }
+
     if (c.status !== ConsultationStatus.RINGING) {
       throw new ConflictException('Call not ringing');
     }
 
-    // Cancel the server-side ring timeout — lawyer explicitly declined.
     this._clearRingTimeout(consultationId);
 
     await this.prisma.consultation.update({
@@ -272,6 +337,7 @@ export class CallService {
     });
 
     await this.redis.del(BUSY_KEY(c.lawyerId));
+    await this.redis.del(INITIATOR_KEY(c.id));
 
     // Persist declined record so caller sees it in history after restart
     await this.chat.saveCallRecord(
@@ -280,7 +346,9 @@ export class CallService {
       'declined', 0,
     ).catch(() => {});
 
-    this.gateway.emitToUser(c.userId, 'call:rejected', { consultationId });
+    // Notify the initiator (whoever they were).
+    this.gateway.emitToUser(c.userId,     'call:rejected', { consultationId });
+    this.gateway.emitToLawyer(c.lawyerId, 'call:rejected', { consultationId });
 
     return {
       success: true,
@@ -340,6 +408,7 @@ export class CallService {
     });
 
     await this.redis.del(BUSY_KEY(c.lawyerId));
+    await this.redis.del(INITIATOR_KEY(c.id));
 
     // Persist call record so both parties see it in history after restart
     await this.chat.saveCallRecord(

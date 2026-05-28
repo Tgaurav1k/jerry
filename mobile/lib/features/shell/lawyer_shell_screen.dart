@@ -53,6 +53,7 @@ class _LawyerShellScreenState extends ConsumerState<LawyerShellScreen> {
           await _onCallKitAccept(
             consultationId: consultationId,
             callerId:       (extra['callerId'] ?? '').toString(),
+            callerRole:     (extra['callerRole'] ?? 'USER').toString(),
             callerName:     (body?['nameCaller'] ?? 'Client').toString(),
             callType:       (extra['callType'] ?? 'VIDEO').toString(),
             channelName:    (extra['channelName'] ?? '').toString(),
@@ -76,6 +77,7 @@ class _LawyerShellScreenState extends ConsumerState<LawyerShellScreen> {
   Future<void> _onCallKitAccept({
     required String consultationId,
     required String callerId,
+    required String callerRole,
     required String callerName,
     required String callType,
     required String channelName,
@@ -95,7 +97,7 @@ class _LawyerShellScreenState extends ConsumerState<LawyerShellScreen> {
         ref.read(chatProvider.notifier).ensureThread(
           threadId: threadId,
           peerId:   callerId,
-          peerRole: 'USER',
+          peerRole: callerRole,
           peerName: callerName,
         );
         ref.read(chatProvider.notifier).trackCall(consultationId, threadId, callType);
@@ -114,6 +116,8 @@ class _LawyerShellScreenState extends ConsumerState<LawyerShellScreen> {
         ),
       );
     } catch (e) {
+      // Dismiss the CallKit notification so the lawyer isn't left staring at it.
+      await CallKitService.instance.endCall(consultationId);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Accept failed: $e')));
@@ -162,6 +166,23 @@ class _LawyerShellScreenState extends ConsumerState<LawyerShellScreen> {
     final agoraToken     = data['token']          as String? ?? '';
     final uid            = (data['uid'] as num?)?.toInt() ?? 0;
 
+    // Track the incoming call so call:ended / call:rejected can inject a
+    // WhatsApp-style call bubble into the chat thread live — even if we
+    // decline or let it time out. Without this, the bubble only appears
+    // after the next chat-history reload.
+    if (callerId.isNotEmpty) {
+      final myId = await ref.read(tokenStorageProvider).getUserId() ?? '';
+      if (!mounted) return;
+      final threadId = ChatNotifier.computeThreadId(myId, callerId);
+      ref.read(chatProvider.notifier).ensureThread(
+        threadId: threadId,
+        peerId:   callerId,
+        peerRole: 'USER',
+        peerName: callerName,
+      );
+      ref.read(chatProvider.notifier).trackCall(consultationId, threadId, callType);
+    }
+
     await Navigator.of(context).push<void>(
       PageRouteBuilder(
         opaque: false,
@@ -177,43 +198,16 @@ class _LawyerShellScreenState extends ConsumerState<LawyerShellScreen> {
           },
           onAccept: () async {
             Navigator.of(ctx).pop();
-            try {
-              final resp = await ref.read(apiClientProvider)
-                  .post('/call/$consultationId/accept');
-              final d2 = resp['data'] as Map<String, dynamic>;
-
-              if (!mounted) return;
-
-              // Ensure thread + track call so call:ended injects a bubble
-              if (callerId.isNotEmpty) {
-                final myId = await ref.read(tokenStorageProvider).getUserId() ?? '';
-                if (!mounted) return;
-                final threadId = ChatNotifier.computeThreadId(myId, callerId);
-                ref.read(chatProvider.notifier).ensureThread(
-                  threadId: threadId,
-                  peerId:   callerId,
-                  peerRole: 'USER',
-                  peerName: callerName,
-                );
-                ref.read(chatProvider.notifier).trackCall(consultationId, threadId, callType);
-              }
-
-              await context.push(
-                VideoCallScreen.routePath,
-                extra: VideoCallArgs(
-                  consultationId: consultationId,
-                  channelId:      d2['agoraChannelName'] as String? ?? channelName,
-                  token:          d2['agoraToken'] as String? ?? agoraToken,
-                  uid:            (d2['uid'] as num?)?.toInt() ?? uid,
-                  callType:       callType,
-                  peerName:       callerName,
-                ),
-              );
-            } catch (e) {
-              if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Accept failed: $e')));
-            }
+            await _onCallKitAccept(
+              consultationId: consultationId,
+              callerId:       callerId,
+              callerRole:     'USER',
+              callerName:     callerName,
+              callType:       callType,
+              channelName:    channelName,
+              token:          agoraToken,
+              uid:            uid,
+            );
           },
         ),
       ),

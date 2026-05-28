@@ -4,3 +4,7 @@ node_modules/
 dist/
 *.log
 .claude/
+
+# Firebase service-account credentials — never commit
+*firebase-adminsdk*.json
+backend/secrets/

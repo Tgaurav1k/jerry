@@ -19,13 +19,15 @@ Future<void> _onFcmBackgroundMessage(RemoteMessage message) async {
 
   await CallKitService.instance.showIncoming(
     consultationId: data['consultationId'] ?? '',
-    callerName:     data['callerName'] ?? 'Client',
+    callerName:     data['callerName'] ?? 'Caller',
     callType:       data['callType'] ?? 'VIDEO',
     extra: {
       'channelName': data['channelName'] ?? '',
       'token':       data['token'] ?? '',
       'uid':         data['uid'] ?? '0',
       'callerId':    data['callerId'] ?? '',
+      'callerRole':  data['callerRole'] ?? '',
+      'callType':    data['callType'] ?? 'VIDEO',
     },
   );
 }

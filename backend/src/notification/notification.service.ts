@@ -61,6 +61,18 @@ export class NotificationService {
       where: { lawyerId, fcmToken: { not: null } },
     });
     const tokens = sessions.map((s) => s.fcmToken!).filter(Boolean);
+    return this._sendDataOnlyToTokens(tokens, data);
+  }
+
+  async sendDataOnlyToUser(userId: string, data: Record<string, string>) {
+    const sessions = await this.prisma.deviceSession.findMany({
+      where: { userId, fcmToken: { not: null } },
+    });
+    const tokens = sessions.map((s) => s.fcmToken!).filter(Boolean);
+    return this._sendDataOnlyToTokens(tokens, data);
+  }
+
+  private async _sendDataOnlyToTokens(tokens: string[], data: Record<string, string>) {
     if (!this.fcmEnabled || !tokens.length) {
       this.logger.debug(`[FCM stub data-only] → ${tokens.length} tokens: ${JSON.stringify(data)}`);
       return;

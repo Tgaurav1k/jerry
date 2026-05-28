@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_callkit_incoming/entities/entities.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:jerry_app/core/auth/session_bridge.dart';
+import 'package:jerry_app/core/call/callkit_service.dart';
 import 'package:jerry_app/core/network/api_client.dart';
 import 'package:jerry_app/core/theme/app_colors.dart';
+import 'package:jerry_app/features/call/video_call_screen.dart';
 import 'package:jerry_app/features/chat/chats_list_screen.dart';
 import 'package:jerry_app/features/chat/chat_provider.dart';
 import 'package:jerry_app/features/home/dark_home_screen.dart';
@@ -14,6 +17,7 @@ import 'package:jerry_app/features/home/profile_placeholder_screen.dart';
 import 'package:jerry_app/features/home/user_home_screen.dart';
 import 'package:jerry_app/features/onboarding/welcome_screen.dart';
 import 'package:jerry_app/shared/widgets/floating_glass_nav.dart';
+import 'package:jerry_app/shared/widgets/incoming_call_overlay.dart';
 
 class UserShellScreen extends ConsumerStatefulWidget {
   const UserShellScreen({super.key});
@@ -36,11 +40,168 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _connectSocket();
+      _registerCallKit();
+    });
   }
 
   @override
   void dispose() {
+    ref.read(socketServiceProvider).socket?.off('call:incoming');
     super.dispose();
+  }
+
+  // ─── Incoming-call handling (lawyer -> client) ───────────────────────────────
+
+  Future<void> _connectSocket() async {
+    final sock = await ref.read(socketServiceProvider).connect();
+    if (sock == null) return;
+    sock.on('call:incoming', (data) {
+      if (!mounted) return;
+      _onIncomingCall(Map<String, dynamic>.from(data as Map));
+    });
+  }
+
+  void _registerCallKit() {
+    CallKitService.instance.registerEventListener((event) async {
+      if (!mounted) return;
+      final body = event.body as Map?;
+      final extra = (body?['extra'] as Map?) ?? {};
+      final consultationId = (body?['id'] ?? '').toString();
+      if (consultationId.isEmpty) return;
+
+      switch (event.event) {
+        case Event.actionCallAccept:
+          await _onCallKitAccept(
+            consultationId: consultationId,
+            callerId:       (extra['callerId'] ?? '').toString(),
+            callerRole:     (extra['callerRole'] ?? 'LAWYER').toString(),
+            callerName:     (body?['nameCaller'] ?? 'Lawyer').toString(),
+            callType:       (extra['callType'] ?? 'VIDEO').toString(),
+            channelName:    (extra['channelName'] ?? '').toString(),
+            token:          (extra['token'] ?? '').toString(),
+            uid:            int.tryParse((extra['uid'] ?? '0').toString()) ?? 0,
+          );
+          break;
+        case Event.actionCallDecline:
+        case Event.actionCallTimeout:
+          try {
+            await ref.read(apiClientProvider).post('/call/$consultationId/reject');
+          } catch (_) {}
+          break;
+        default:
+          break;
+      }
+    });
+  }
+
+  Future<void> _onCallKitAccept({
+    required String consultationId,
+    required String callerId,
+    required String callerRole,
+    required String callerName,
+    required String callType,
+    required String channelName,
+    required String token,
+    required int    uid,
+  }) async {
+    try {
+      final resp = await ref.read(apiClientProvider).post('/call/$consultationId/accept');
+      final d2   = resp['data'] as Map<String, dynamic>;
+      if (!mounted) return;
+
+      if (callerId.isNotEmpty) {
+        final myId = await ref.read(tokenStorageProvider).getUserId() ?? '';
+        if (!mounted) return;
+        final threadId = ChatNotifier.computeThreadId(myId, callerId);
+        ref.read(chatProvider.notifier).ensureThread(
+          threadId: threadId,
+          peerId:   callerId,
+          peerRole: callerRole,
+          peerName: callerName,
+        );
+        ref.read(chatProvider.notifier).trackCall(consultationId, threadId, callType);
+      }
+
+      if (!mounted) return;
+      await context.push(
+        VideoCallScreen.routePath,
+        extra: VideoCallArgs(
+          consultationId: consultationId,
+          channelId:      d2['agoraChannelName'] as String? ?? channelName,
+          token:          d2['agoraToken']       as String? ?? token,
+          uid:            (d2['uid'] as num?)?.toInt() ?? uid,
+          callType:       callType,
+          peerName:       callerName,
+        ),
+      );
+    } catch (e) {
+      // Dismiss the CallKit notification so the user isn't left staring at it.
+      await CallKitService.instance.endCall(consultationId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Accept failed: $e')));
+    }
+  }
+
+  Future<void> _onIncomingCall(Map<String, dynamic> data) async {
+    if (!mounted) return;
+    final consultationId = data['consultationId'] as String;
+    final callerId       = data['callerId']       as String? ?? '';
+    final callerRole     = data['callerRole']     as String? ?? 'LAWYER';
+    final callType       = data['type']           as String? ?? 'VIDEO';
+    final callerName     = data['callerName']     as String? ?? 'Lawyer';
+    final channelName    = data['channelName']    as String? ?? '';
+    final agoraToken     = data['token']          as String? ?? '';
+    final uid            = (data['uid'] as num?)?.toInt() ?? 0;
+
+    // Track the incoming call so call:ended / call:rejected can inject a
+    // WhatsApp-style call bubble into the chat thread live — even if we
+    // decline or let it time out. Without this, the bubble only appears
+    // after the next chat-history reload.
+    if (callerId.isNotEmpty) {
+      final myId = await ref.read(tokenStorageProvider).getUserId() ?? '';
+      if (!mounted) return;
+      final threadId = ChatNotifier.computeThreadId(myId, callerId);
+      ref.read(chatProvider.notifier).ensureThread(
+        threadId: threadId,
+        peerId:   callerId,
+        peerRole: callerRole,
+        peerName: callerName,
+      );
+      ref.read(chatProvider.notifier).trackCall(consultationId, threadId, callType);
+    }
+
+    await Navigator.of(context).push<void>(
+      PageRouteBuilder(
+        opaque: false,
+        barrierColor: Colors.transparent,
+        pageBuilder: (ctx, anim, secAnim) => IncomingCallOverlay(
+          callerName: callerName,
+          callType:   callType,
+          onReject: () async {
+            Navigator.of(ctx).pop();
+            try {
+              await ref.read(apiClientProvider).post('/call/$consultationId/reject');
+            } catch (_) {}
+          },
+          onAccept: () async {
+            Navigator.of(ctx).pop();
+            await _onCallKitAccept(
+              consultationId: consultationId,
+              callerId:       callerId,
+              callerRole:     callerRole,
+              callerName:     callerName,
+              callType:       callType,
+              channelName:    channelName,
+              token:          agoraToken,
+              uid:            uid,
+            );
+          },
+        ),
+      ),
+    );
   }
 
   void _openDirectory() {
