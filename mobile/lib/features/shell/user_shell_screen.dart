@@ -348,7 +348,11 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
                 _index = i;
                 if (i != 0) _showDirectory = false;
               }),
-              tabBadgeCounts: _showDirectory ? null : [0, chatUnread, 0, 0],
+              // Always pass per-tab unread counts so the red dot/number on
+              // the Chats icon is visible even when the user is browsing the
+              // lawyer directory (previously hidden in that view — meant new
+              // messages went unnoticed until they tapped Home then Chats).
+              tabBadgeCounts: [0, chatUnread, 0, 0],
               items: const [
                 FloatingNavItem(LucideIcons.home, 'HOME'),
                 FloatingNavItem(LucideIcons.messageSquare, 'CHATS'),
