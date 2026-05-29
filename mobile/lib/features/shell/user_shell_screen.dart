@@ -235,10 +235,17 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
         onLogout: () async {
           Navigator.of(context).pop();
           final storage = ref.read(tokenStorageProvider);
-          final refresh = await storage.getRefreshToken();
+          final api = ref.read(apiClientProvider);
+          final refresh  = await storage.getRefreshToken();
+          final deviceId = await storage.getDeviceId();
+          // Unregister this device's FCM token first so pushes meant for the
+          // just-logged-out identity stop reaching this phone.
+          if (deviceId != null) {
+            try { await api.delete('/users/me/fcm', data: {'deviceId': deviceId}); } catch (_) {}
+          }
           if (refresh != null) {
             try {
-              await ref.read(apiClientProvider).post('/auth/logout', data: {'refreshToken': refresh});
+              await api.post('/auth/logout', data: {'refreshToken': refresh});
             } catch (_) {}
           }
           await storage.clear();

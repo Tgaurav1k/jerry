@@ -351,9 +351,14 @@ class _UnderReviewScreenState extends ConsumerState<UnderReviewScreen> {
                 child: OutlinedButton(
                   onPressed: () async {
                     _pollTimer?.cancel();
-                    final api     = ref.read(apiClientProvider);
-                    final storage = ref.read(tokenStorageProvider);
-                    final refresh = await storage.getRefreshToken();
+                    final api      = ref.read(apiClientProvider);
+                    final storage  = ref.read(tokenStorageProvider);
+                    final refresh  = await storage.getRefreshToken();
+                    final deviceId = await storage.getDeviceId();
+                    // Drop FCM registration for this device first.
+                    if (deviceId != null) {
+                      try { await api.delete('/users/me/fcm', data: {'deviceId': deviceId}); } catch (_) {}
+                    }
                     if (refresh != null) {
                       try {
                         await api.post('/auth/logout', data: {'refreshToken': refresh});

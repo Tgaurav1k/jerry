@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { IsString } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
@@ -29,5 +29,14 @@ export class UserController {
   @Post('me/fcm')
   registerFcm(@CurrentUser() user: JwtPayload, @Body() dto: FcmDto) {
     return this.svc.registerFcm(user, dto.fcmToken, dto.deviceId);
+  }
+
+  /// Unregister this device's FCM token from the currently-authenticated
+  /// account. Called by the mobile app right before clearing local tokens
+  /// on logout, so push fan-out for the just-logged-out identity stops
+  /// hitting this device immediately.
+  @Delete('me/fcm')
+  unregisterFcm(@CurrentUser() user: JwtPayload, @Body() body: { deviceId: string }) {
+    return this.svc.unregisterFcm(user, body.deviceId);
   }
 }

@@ -44,9 +44,15 @@ class _AdminShellScreenState extends ConsumerState<AdminShellScreen>
 
   Future<void> _signOut() async {
     final storage = ref.read(tokenStorageProvider);
+    final api = ref.read(apiClientProvider);
     final refreshToken = await storage.getRefreshToken();
+    final deviceId     = await storage.getDeviceId();
+    // Drop this device's FCM token from the current account first.
+    if (deviceId != null) {
+      try { await api.delete('/users/me/fcm', data: {'deviceId': deviceId}); } catch (_) {}
+    }
     try {
-      await ref.read(apiClientProvider).post('/auth/logout', data: {'refreshToken': refreshToken});
+      await api.post('/auth/logout', data: {'refreshToken': refreshToken});
     } catch (_) {}
     await storage.clear();
     SessionBridge.notifySessionCleared();

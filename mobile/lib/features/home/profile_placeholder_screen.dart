@@ -32,9 +32,18 @@ class _ProfilePlaceholderScreenState extends ConsumerState<ProfilePlaceholderScr
 
   Future<void> _signOut() async {
     final storage = ref.read(tokenStorageProvider);
+    final api = ref.read(apiClientProvider);
     final refreshToken = await storage.getRefreshToken();
+    final deviceId = await storage.getDeviceId();
+    // Unregister this device's FCM token from the current account FIRST so
+    // pushes meant for the just-logged-out identity stop reaching this phone.
+    // Without this, the next user to log in on this device keeps getting
+    // calls/messages targeted at the previous account.
+    if (deviceId != null) {
+      try { await api.delete('/users/me/fcm', data: {'deviceId': deviceId}); } catch (_) {}
+    }
     try {
-      await ref.read(apiClientProvider).post('/auth/logout', data: {'refreshToken': refreshToken});
+      await api.post('/auth/logout', data: {'refreshToken': refreshToken});
     } catch (_) {}
     await storage.clear();
     SessionBridge.notifySessionCleared();
