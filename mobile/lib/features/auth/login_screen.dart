@@ -169,10 +169,31 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               Text('Sign in as:', style: tt.bodySmall?.copyWith(color: AppColors.secondary)),
               const SizedBox(width: 12),
               _RoleChip(label: 'Client', value: 'USER', group: _role,
-                  onTap: () => setState(() => _role = 'USER')),
+                  onTap: () => setState(() {
+                    _role = 'USER';
+                    // Auto-fill demo client credentials when the user is on
+                    // an empty field or had a different demo set. Don't
+                    // clobber a manually-typed email.
+                    if (_email.text.isEmpty ||
+                        _email.text == Env.demoLawyerEmail ||
+                        _email.text == Env.superadminEmail) {
+                      _email.text = Env.demoUserEmail;
+                      _password.text = Env.demoUserPassword;
+                    }
+                  })),
               const SizedBox(width: 8),
               _RoleChip(label: 'Lawyer', value: 'LAWYER', group: _role,
-                  onTap: () => setState(() => _role = 'LAWYER')),
+                  onTap: () => setState(() {
+                    _role = 'LAWYER';
+                    // Same pattern — pre-fill demo lawyer (jerry) credentials
+                    // so the demo flow is one-tap.
+                    if (_email.text.isEmpty ||
+                        _email.text == Env.demoUserEmail ||
+                        _email.text == Env.superadminEmail) {
+                      _email.text = Env.demoLawyerEmail;
+                      _password.text = Env.demoLawyerPassword;
+                    }
+                  })),
               const SizedBox(width: 8),
               _RoleChip(label: 'Admin', value: 'ADMIN', group: _role,
                   onTap: () => setState(() {
