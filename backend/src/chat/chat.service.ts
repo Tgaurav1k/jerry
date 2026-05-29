@@ -24,6 +24,17 @@ export class ChatService {
       content: string;
     },
   ) {
+    // Guard against corrupt threadIds (e.g. ":<uuid>" or "<uuid>:") that
+    // pollute /chat/threads forever once persisted. A valid threadId is
+    // "<uuidA>:<uuidB>" where both halves are non-empty.
+    if (!sender?.sub || !payload.recipientId || !payload.threadId) {
+      throw new BadRequestException('senderId, recipientId, and threadId are required');
+    }
+    if (payload.threadId.startsWith(':') || payload.threadId.endsWith(':')
+        || !payload.threadId.includes(':')) {
+      throw new BadRequestException('Malformed threadId');
+    }
+
     const now = new Date();
     const msgPayload = {
       id: payload.messageId,
@@ -81,12 +92,17 @@ export class ChatService {
         ? { hiddenForLawyer: false }
         : {};
 
+    // Order by createdAt DESC so we always return the LATEST `limit` rows
+    // (previously asc+take returned the OLDEST limit rows, which meant any
+    // message in a thread with >limit messages was invisible on reload —
+    // users perceived this as "messages disappear after closing the app").
+    // Reverse before returning so the client still gets chronological order.
     const rows = await this.prisma.chatMessage.findMany({
       where: { threadId, ...hiddenFilter },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { createdAt: 'desc' },
       take: limit,
     });
-    return rows.map((m) => this._serialize(m));
+    return rows.reverse().map((m) => this._serialize(m));
   }
 
   /// Shared serializer applied to both history rows and live broadcasts.
@@ -158,7 +174,7 @@ export class ChatService {
     // viewer has hidden ("Delete for me") so the preview reflects the next
     // most-recent visible row, not a phantom.
     const hideCol = role === 'USER' ? '"hiddenForUser"' : '"hiddenForLawyer"';
-    const rows = await this.prisma.$queryRawUnsafe<any[]>(`
+    const rawRows = await this.prisma.$queryRawUnsafe<any[]>(`
       SELECT DISTINCT ON ("threadId")
         id, "threadId", "senderId", "senderRole",
         "recipientId", "recipientRole", content, type,
@@ -169,6 +185,14 @@ export class ChatService {
         AND ${hideCol} = FALSE
       ORDER BY "threadId", "createdAt" DESC
     `, userId);
+
+    // Defensive filter: drop rows with a malformed threadId (":<uuid>" or
+    // "<uuid>:" or no colon) so legacy corrupt data doesn't show up as
+    // duplicate phantom chats. Send() now also blocks new corrupt rows.
+    const rows = rawRows.filter((m) => {
+      const tid = m.threadId as string | undefined;
+      return !!tid && tid.includes(':') && !tid.startsWith(':') && !tid.endsWith(':');
+    });
 
     // Resolve peer info (name/photo) for each thread
     const peerIds = { USER: new Set<string>(), LAWYER: new Set<string>() };
