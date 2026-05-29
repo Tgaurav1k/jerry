@@ -106,9 +106,19 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
     final engine = createAgoraRtcEngine();
     await engine.initialize(RtcEngineContext(appId: appId));
 
+    // Always enable the audio module. For video calls, enableVideo() would
+    // implicitly enable audio too, but being explicit is safer; for voice
+    // calls this is REQUIRED — otherwise the mic isn't captured and the
+    // remote peer hears silence.
+    await engine.enableAudio();
+
     if (!_isVoice) {
       await engine.enableVideo();
       await engine.startPreview();
+    } else {
+      // Voice-only: route audio through the loud speaker by default so the
+      // call behaves like WhatsApp / phone calls, not earpiece-quiet.
+      await engine.setEnableSpeakerphone(true);
     }
 
     engine.registerEventHandler(
