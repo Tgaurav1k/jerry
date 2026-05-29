@@ -20,6 +20,12 @@ class NotificationService {
     }
   }
 
+  /// Channel ID used for chat notifications. Must match the id used in
+  /// [show] below. Created with HIGH importance so Android renders them as
+  /// heads-up banners (the WhatsApp-style popup) with sound + vibration.
+  static const _chatChannelId   = 'jerry_chat_v2';
+  static const _chatChannelName = 'Jerry Messages';
+
   static Future<void> init() async {
     await _plugin.initialize(
       const InitializationSettings(
@@ -27,10 +33,32 @@ class NotificationService {
         iOS: DarwinInitializationSettings(),
       ),
     );
-    await _plugin
+
+    final androidImpl = _plugin
         .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-        ?.requestNotificationsPermission();
+            AndroidFlutterLocalNotificationsPlugin>();
+
+    // Android 13+ runtime POST_NOTIFICATIONS permission.
+    await androidImpl?.requestNotificationsPermission();
+
+    // ⚡ CRITICAL: explicitly create the notification channel with HIGH
+    // importance up front. On Android 8+ the channel's importance is
+    // immutable once created — if the first notification fires before a
+    // channel exists, Android creates it with default (silent) importance
+    // and heads-up banners never appear no matter what `priority: high`
+    // we pass later. Using a new channel id (_v2) avoids inheriting a
+    // previously-created low-importance channel from older app installs.
+    await androidImpl?.createNotificationChannel(
+      const AndroidNotificationChannel(
+        _chatChannelId,
+        _chatChannelName,
+        description: 'New chat messages from your lawyer or client',
+        importance: Importance.high,
+        playSound: true,
+        enableVibration: true,
+        enableLights: true,
+      ),
+    );
 
     // Request FCM permission
     await FirebaseMessaging.instance.requestPermission();
@@ -99,11 +127,22 @@ class NotificationService {
       body,
       const NotificationDetails(
         android: AndroidNotificationDetails(
-          'jerry_chat',
-          'Jerry Messages',
-          channelDescription: 'Jerry notifications',
+          _chatChannelId,
+          _chatChannelName,
+          channelDescription: 'New chat messages from your lawyer or client',
           importance: Importance.high,
           priority: Priority.high,
+          // Make sure the heads-up banner pops over whatever screen the user
+          // is on (not just buried in the tray).
+          ticker: 'New message',
+          playSound: true,
+          enableVibration: true,
+          enableLights: true,
+          // Show full title+body even on the lock screen.
+          visibility: NotificationVisibility.public,
+          // Default category 'msg' tells Android this is a chat — gets the
+          // preferential heads-up treatment.
+          category: AndroidNotificationCategory.message,
         ),
         iOS: DarwinNotificationDetails(
           presentAlert: true,
