@@ -308,6 +308,17 @@ class ChatNotifier extends StateNotifier<ChatState> {
     final unread = Map<String, int>.from(state.unreadByThreadId);
     if (!isMe && msg.threadId != NotificationService.currentThreadId) {
       unread[msg.threadId] = (unread[msg.threadId] ?? 0) + 1;
+
+      // In-app heads-up notification (Instagram / WhatsApp style). Tab badge
+      // already updates via the unread map; this gives the user the popup
+      // they expect when they're foregrounded on a different tab. We skip it
+      // when the user is actively reading this thread (currentThreadId).
+      // The FCM foreground handler intentionally skips chat:message so this
+      // is the single source of truth — no double-toasting.
+      if (msg.type == 'text' && msg.content.isNotEmpty) {
+        final sender = thread.peerName.isNotEmpty ? thread.peerName : 'New message';
+        NotificationService.show(sender, msg.content);
+      }
     }
     state = state.copyWith(threads: threads, unreadByThreadId: unread);
 
