@@ -106,6 +106,12 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
     required String token,
     required int    uid,
   }) async {
+    // Dismiss the CallKit native UI immediately. Without this, after the user
+    // taps Accept, the native "Ongoing call" notification stays in the
+    // foreground and our in-app VideoCallScreen never becomes visible — the
+    // call "hides" into a notification the user can never get back to.
+    await CallKitService.instance.endCall(consultationId);
+
     try {
       final resp = await ref.read(apiClientProvider).post('/call/$consultationId/accept');
       final d2   = resp['data'] as Map<String, dynamic>;

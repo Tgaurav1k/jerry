@@ -133,7 +133,14 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
           if (mounted) setState(() => _remoteUids.add(remoteUid));
         },
         onUserOffline: (_, remoteUid, _) {
-          if (mounted) setState(() => _remoteUids.remove(remoteUid));
+          if (!mounted) return;
+          setState(() => _remoteUids.remove(remoteUid));
+          // Peer dropped out of the Agora channel (hung up, force-closed app,
+          // lost network). Treat as call ended — without this, the caller's
+          // screen sat on "Waiting for the other party…" forever after the
+          // receiver hung up. POST /end is idempotent so it's safe to fire
+          // here even if the peer's own /end already flipped DB status.
+          _onRemoteEnd('Call ended');
         },
         // Fires ~30 s before the current Agora token expires.
         // We mint a fresh one from the backend and hand it back to the engine
@@ -198,11 +205,25 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
     messenger?.showSnackBar(const SnackBar(content: Text('No answer.')));
   }
 
+  /// Re-entrancy guard — _onRemoteEnd can be triggered from multiple
+  /// sources concurrently (call:ended socket event, call:rejected,
+  /// Agora's onUserOffline). Without this guard the second invocation
+  /// would try to pop a screen that's already gone.
+  bool _ending = false;
+
   void _onRemoteEnd(String? message) {
-    if (!mounted) return;
+    if (!mounted || _ending) return;
+    _ending = true;
     _noAnswerTimer?.cancel();
     _noAnswerTimer = null;
     final messenger = message != null ? ScaffoldMessenger.maybeOf(context) : null;
+    // Fire-and-forget /end so the backend marks the consultation ENDED and
+    // the lawyer-busy lock is released. If the peer already POSTed /end
+    // (because they were the one who hung up), this is idempotent — the
+    // backend's end() handler safely tolerates double-ends.
+    ref.read(apiClientProvider)
+        .post('/call/${widget.args.consultationId}/end')
+        .catchError((_) => null);
     _engine?.leaveChannel();
     _engine?.release();
     _engine = null;
