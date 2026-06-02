@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -22,9 +23,12 @@ class SplashScreen extends ConsumerStatefulWidget {
 }
 
 class _SplashScreenState extends ConsumerState<SplashScreen> {
-  /// Hard ceiling on the splash. If anything (storage, network) takes longer
-  /// than this, fall back to Welcome so the user never sits on the logo.
-  static const Duration _maxSplash = Duration(seconds: 6);
+  /// Hard ceiling on the splash. If anything (storage, network) takes
+  /// longer than this, fall back to Welcome so the user never sits on the
+  /// logo. Must be slightly above the /lawyers/me timeout (30s) so that
+  /// call gets a chance to complete during a Render cold start instead of
+  /// the splash bailing first.
+  static const Duration _maxSplash = Duration(seconds: 35);
 
   @override
   void initState() {
@@ -87,9 +91,13 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
     if (role == 'LAWYER') {
       try {
         final api  = ref.read(apiClientProvider);
-        // Bounded so a slow / cold-starting backend never stalls the splash.
+        // Wide timeout — Render free tier's cold start can take 30-50s. A
+        // 5-second window was almost guaranteed to fail after idle and
+        // dropped APPROVED lawyers onto the license-upload screen by
+        // accident. The outer splash _maxSplash (12s) still caps total
+        // wait so the user never sits forever.
         final resp = await api.get('/lawyers/me')
-            .timeout(const Duration(seconds: 5));
+            .timeout(const Duration(seconds: 30));
         final data = resp['data'] as Map<String, dynamic>;
         final status = data['verificationStatus'] as String? ?? 'PENDING_UPLOAD';
 
@@ -101,10 +109,18 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
         } else {
           context.go(UnderReviewScreen.routePath, extra: status);
         }
+      } on DioException catch (e) {
+        // 401 = expired/invalid token → clear session, force re-login.
+        // Anything else (timeout, 5xx, network drop) → bounce to Welcome
+        // so the user re-authenticates and we get a fresh status. Do NOT
+        // fall back to LicenseUploadScreen — that incorrectly tells an
+        // APPROVED lawyer they're unverified.
+        if (e.response?.statusCode == 401) {
+          try { await ref.read(tokenStorageProvider).clear(); } catch (_) {}
+        }
+        if (mounted) context.go(WelcomeScreen.routePath);
       } catch (_) {
-        // Network / timeout / 401: fall back to LicenseUpload (lawyer's
-        // verification-aware first screen). Worst case they re-login.
-        if (mounted) context.go(LicenseUploadScreen.routePath);
+        if (mounted) context.go(WelcomeScreen.routePath);
       }
     } else {
       if (mounted) context.go(UserShellScreen.routePath);
