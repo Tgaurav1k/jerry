@@ -15,6 +15,16 @@ import 'package:jerry_app/firebase_options.dart';
 Future<void> _onFcmBackgroundMessage(RemoteMessage message) async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   final data = message.data;
+
+  // Caller hung up / call answered elsewhere while we were still ringing —
+  // tear down the native CallKit UI. Without this the phone keeps ringing
+  // the full 45 s and the user ends up answering a dead call.
+  if (data['type'] == 'call:cancelled') {
+    final id = data['consultationId'] as String? ?? '';
+    if (id.isNotEmpty) await CallKitService.instance.endCall(id);
+    return;
+  }
+
   if (data['type'] != 'call:incoming') return;
 
   await CallKitService.instance.showIncoming(

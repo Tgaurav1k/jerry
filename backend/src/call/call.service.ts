@@ -188,6 +188,36 @@ export class CallService {
     };
   }
 
+  /**
+   * Data-only FCM telling the recipient's device(s) to tear down any ringing
+   * UI (native CallKit screen / in-app overlay). Socket events alone are NOT
+   * enough: the CallKit ring on a killed or backgrounded app was started by
+   * an FCM push, so only another push can stop it. Without this, the phone
+   * keeps ringing for the full 45 s after the caller hung up, and answering
+   * the dead call fails with "Call not ringing".
+   *
+   * Sent to the NON-initiator side(s). If the initiator is unknown (Redis
+   * evicted), push to both — dismissing a call id that isn't ringing is a
+   * no-op on the client.
+   */
+  private _pushCallCancelled(
+    c: { id: string; userId: string; lawyerId: string },
+    reason: 'cancelled' | 'timeout' | 'rejected' | 'answered_elsewhere',
+    initiatorRole: string | null,
+  ) {
+    const data: Record<string, string> = {
+      type: 'call:cancelled',
+      consultationId: c.id,
+      reason,
+    };
+    if (initiatorRole !== 'LAWYER') {
+      this.notifications.sendDataOnlyToLawyer(c.lawyerId, data).catch(() => {});
+    }
+    if (initiatorRole !== 'USER') {
+      this.notifications.sendDataOnlyToUser(c.userId, data).catch(() => {});
+    }
+  }
+
   // ─── Ring timeout (server-side missed-call watcher) ──────────────────────────
 
   private readonly pendingTimeouts = new Map<string, NodeJS.Timeout>();
@@ -221,12 +251,18 @@ export class CallService {
       const c = await this.prisma.consultation.findUnique({ where: { id: consultationId } });
       if (!c || c.status !== ConsultationStatus.RINGING) return;
 
+      // Read BEFORE deleting — needed to route the cancel/missed pushes.
+      const initiatorRole = await this.redis.get(INITIATOR_KEY(c.id));
+
       await this.prisma.consultation.update({
         where: { id: consultationId },
         data: { status: ConsultationStatus.MISSED },
       });
       await this.redis.del(BUSY_KEY(c.lawyerId));
       await this.redis.del(INITIATOR_KEY(c.id));
+
+      // Stop the ringing UI on the recipient's device(s).
+      this._pushCallCancelled(c, 'timeout', initiatorRole);
 
       // Insert the "missed call" bubble into the shared chat thread.
       await this.chat.saveCallRecord(
@@ -241,22 +277,27 @@ export class CallService {
       this.gateway.emitToUser(c.userId, 'call:ended', endedPayload);
       this.gateway.emitToLawyer(c.lawyerId, 'call:ended', endedPayload);
 
-      // Push the missed-call summary to whichever side didn't pick up. We
-      // don't know which side that was without re-reading the initiator, so
-      // push to both — clients dedupe by consultationId anyway.
+      // Push the missed-call summary only to the side that didn't pick up
+      // (the non-initiator). Previously this went to both sides, so the
+      // CALLER got a bogus "X tried to reach you" push about their own call.
+      // If the initiator is unknown (Redis evicted), fall back to both.
       const callerLabel = c.type === 'VIDEO' ? 'video' : 'voice';
-      this.notifications.sendToLawyer(
-        c.lawyerId,
-        `📞 Missed ${callerLabel} call`,
-        `${(await this.prisma.user.findUnique({ where: { id: c.userId } }))?.fullName ?? 'A client'} tried to reach you`,
-        { type: 'call:missed', consultationId: c.id },
-      ).catch(() => {});
-      this.notifications.sendToUser(
-        c.userId,
-        `📞 Missed ${callerLabel} call`,
-        `${(await this.prisma.lawyer.findUnique({ where: { id: c.lawyerId } }))?.fullName ?? 'A lawyer'} tried to reach you`,
-        { type: 'call:missed', consultationId: c.id },
-      ).catch(() => {});
+      if (initiatorRole !== 'LAWYER') {
+        this.notifications.sendToLawyer(
+          c.lawyerId,
+          `📞 Missed ${callerLabel} call`,
+          `${(await this.prisma.user.findUnique({ where: { id: c.userId } }))?.fullName ?? 'A client'} tried to reach you`,
+          { type: 'call:missed', consultationId: c.id },
+        ).catch(() => {});
+      }
+      if (initiatorRole !== 'USER') {
+        this.notifications.sendToUser(
+          c.userId,
+          `📞 Missed ${callerLabel} call`,
+          `${(await this.prisma.lawyer.findUnique({ where: { id: c.lawyerId } }))?.fullName ?? 'A lawyer'} tried to reach you`,
+          { type: 'call:missed', consultationId: c.id },
+        ).catch(() => {});
+      }
     } catch (e) {
       console.error('[call timeout]', e);
     }
@@ -291,6 +332,11 @@ export class CallService {
       where: { id: consultationId },
       data: { status: ConsultationStatus.ACTIVE, startedAt: new Date() },
     });
+
+    // The recipient may be logged in on several devices — stop the ring on
+    // all of them. The device that accepted already dismissed its own UI, so
+    // the redundant push there is a harmless no-op.
+    this._pushCallCancelled(c, 'answered_elsewhere', initiatorRole);
 
     const channelName = c.agoraChannelName ?? '';
     const accepterUid = agoraUidFromString(user.sub);
@@ -338,6 +384,10 @@ export class CallService {
 
     await this.redis.del(BUSY_KEY(c.lawyerId));
     await this.redis.del(INITIATOR_KEY(c.id));
+
+    // Stop the ring on the recipient's OTHER devices (and the parallel
+    // native CallKit notification on the device that declined in-app).
+    this._pushCallCancelled(c, 'rejected', initiatorRole);
 
     // Persist declined record so caller sees it in history after restart
     await this.chat.saveCallRecord(
@@ -392,6 +442,14 @@ export class CallService {
     // before the timer fires (e.g. caller cancels mid-ring).
     this._clearRingTimeout(consultationId);
 
+    // If the caller cancelled while still RINGING, the recipient's device is
+    // mid-ring (CallKit / overlay) and must be told to stop. Capture state +
+    // initiator before we overwrite/delete them below.
+    const wasRinging = c.status === ConsultationStatus.RINGING;
+    const initiatorRole = wasRinging
+      ? await this.redis.get(INITIATOR_KEY(c.id))
+      : null;
+
     const ended = new Date();
     const started = c.startedAt;
     const durationSeconds = started
@@ -409,6 +467,8 @@ export class CallService {
 
     await this.redis.del(BUSY_KEY(c.lawyerId));
     await this.redis.del(INITIATOR_KEY(c.id));
+
+    if (wasRinging) this._pushCallCancelled(c, 'cancelled', initiatorRole);
 
     // Persist call record so both parties see it in history after restart
     await this.chat.saveCallRecord(

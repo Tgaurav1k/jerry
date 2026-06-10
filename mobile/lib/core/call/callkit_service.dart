@@ -18,6 +18,38 @@ class CallKitService {
 
   StreamSubscription<CallEvent?>? _eventSub;
 
+  /// Foreground ring dedupe. A foregrounded app receives the same incoming
+  /// call twice — once over the live socket (in-app overlay) and once via the
+  /// FCM data push (native CallKit ring). Whichever path arrives first claims
+  /// the consultation id here; the second path must skip its UI, otherwise
+  /// two ringtones play at once. Ids are unique per call, so entries that are
+  /// never cleared (e.g. ring shown while logged out) are harmless.
+  final Set<String> _ringing = {};
+
+  /// Returns true if this path is first and should show its ringing UI.
+  bool tryBeginRinging(String consultationId) => _ringing.add(consultationId);
+
+  void clearRinging(String consultationId) => _ringing.remove(consultationId);
+
+  /// Calls the user accepted from the native UI before the Dart listener was
+  /// attached. When the app is cold-started by an Accept tap, the
+  /// [onEvent] stream has already missed the event by the time the shell
+  /// screen registers its listener — without this check the app just opens to
+  /// the home screen and the call goes nowhere.
+  Future<List<Map<String, dynamic>>> pendingAcceptedCalls() async {
+    try {
+      final calls = await FlutterCallkitIncoming.activeCalls();
+      if (calls is! List) return const [];
+      return calls
+          .whereType<Map>()
+          .map((c) => Map<String, dynamic>.from(c))
+          .where((c) => c['isAccepted'] == true)
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
   /// Listen for accept/decline taps on the native UI. Call once from app
   /// bootstrap, before the user logs in.
   void registerEventListener(

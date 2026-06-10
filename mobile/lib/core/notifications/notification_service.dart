@@ -11,6 +11,11 @@ class NotificationService {
   // ChatThreadScreen sets this so FCM skips that thread; ChatNotifier uses it for in-app unread.
   static String? currentThreadId;
 
+  /// Set by the shell screens. Fired when a `call:cancelled` push arrives in
+  /// the foreground so the in-app IncomingCallOverlay (if showing for that
+  /// consultation) can be popped even if the socket missed the event.
+  static void Function(String consultationId)? onCallCancelled;
+
   // Called after login to get and register FCM token
   static Future<String?> getFcmToken() async {
     try {
@@ -82,10 +87,30 @@ class NotificationService {
       final data = message.data;
       final type = data['type'] as String?;
 
+      // Caller hung up / answered elsewhere while we were ringing — kill the
+      // native CallKit UI and let the shell pop its in-app overlay.
+      if (type == 'call:cancelled') {
+        final id = data['consultationId'] as String? ?? '';
+        if (id.isNotEmpty) {
+          CallKitService.instance.endCall(id);
+          CallKitService.instance.clearRinging(id);
+          onCallCancelled?.call(id);
+        }
+        return;
+      }
+
       // Incoming call: bridge to the native CallKit ring even though we're
       // foregrounded — the live socket might not be connected yet (e.g. user is
       // on Welcome / Login) and we must still ring like WhatsApp.
       if (type == 'call:incoming') {
+        // The live socket delivers the same call to the shell, which shows
+        // the in-app overlay. If that path won the race, skip the native
+        // ring — otherwise two ringtones play and declining one UI leaves
+        // the other ringing.
+        final id = data['consultationId'] as String? ?? '';
+        if (id.isNotEmpty && !CallKitService.instance.tryBeginRinging(id)) {
+          return;
+        }
         CallKitService.instance.showIncoming(
           consultationId: data['consultationId'] ?? '',
           callerName:     data['callerName'] ?? 'Caller',

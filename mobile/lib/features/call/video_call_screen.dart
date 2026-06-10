@@ -52,6 +52,14 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
   static const Duration _noAnswerTimeout = Duration(seconds: 55);
   Timer? _noAnswerTimer;
 
+  // When the peer drops from the channel because their NETWORK died (Agora
+  // reason: dropped) — as opposed to deliberately hanging up (reason: quit) —
+  // give them a grace window to auto-rejoin instead of tearing the call down
+  // on the first blip.
+  static const Duration _peerReconnectGrace = Duration(seconds: 30);
+  Timer? _peerReconnectTimer;
+  bool _peerReconnecting = false;
+
   // Named handlers — we must remove ONLY these, not all socket listeners
   late final void Function(dynamic) _rejectedHandler;
   late final void Function(dynamic) _endedHandler;
@@ -127,19 +135,41 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
           if (mounted) setState(() => _joined = true);
         },
         onUserJoined: (_, remoteUid, _) {
-          // Peer picked up — cancel the no-answer fallback.
+          // Peer picked up (or came back after a network blip) — cancel the
+          // no-answer fallback and any pending reconnect-grace teardown.
           _noAnswerTimer?.cancel();
           _noAnswerTimer = null;
-          if (mounted) setState(() => _remoteUids.add(remoteUid));
+          _peerReconnectTimer?.cancel();
+          _peerReconnectTimer = null;
+          if (mounted) {
+            setState(() {
+              _peerReconnecting = false;
+              _remoteUids.add(remoteUid);
+            });
+          }
         },
-        onUserOffline: (_, remoteUid, _) {
+        onUserOffline: (_, remoteUid, reason) {
           if (!mounted) return;
           setState(() => _remoteUids.remove(remoteUid));
-          // Peer dropped out of the Agora channel (hung up, force-closed app,
-          // lost network). Treat as call ended — without this, the caller's
-          // screen sat on "Waiting for the other party…" forever after the
-          // receiver hung up. POST /end is idempotent so it's safe to fire
-          // here even if the peer's own /end already flipped DB status.
+          if (reason == UserOfflineReasonType.userOfflineDropped) {
+            // Peer's NETWORK dropped — they didn't hang up. Agora will bring
+            // them back automatically when connectivity returns; give them a
+            // grace window before declaring the call dead. Previously any
+            // blip on the peer's side instantly ended the whole call.
+            setState(() => _peerReconnecting = true);
+            _peerReconnectTimer?.cancel();
+            _peerReconnectTimer = Timer(_peerReconnectGrace, () {
+              if (mounted && _remoteUids.isEmpty) {
+                _onRemoteEnd('Call ended — connection lost.');
+              }
+            });
+            return;
+          }
+          // Peer deliberately left the channel (hung up, force-closed app).
+          // Treat as call ended — without this, the caller's screen sat on
+          // "Waiting for the other party…" forever after the receiver hung
+          // up. POST /end is idempotent so it's safe to fire here even if
+          // the peer's own /end already flipped DB status.
           _onRemoteEnd('Call ended');
         },
         // Fires ~30 s before the current Agora token expires.
@@ -216,6 +246,8 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
     _ending = true;
     _noAnswerTimer?.cancel();
     _noAnswerTimer = null;
+    _peerReconnectTimer?.cancel();
+    _peerReconnectTimer = null;
     final messenger = message != null ? ScaffoldMessenger.maybeOf(context) : null;
     // Fire-and-forget /end so the backend marks the consultation ENDED and
     // the lawyer-busy lock is released. If the peer already POSTed /end
@@ -239,6 +271,8 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
   Future<void> _hangUp() async {
     _noAnswerTimer?.cancel();
     _noAnswerTimer = null;
+    _peerReconnectTimer?.cancel();
+    _peerReconnectTimer = null;
     // Remove our listeners before posting end, so the returning call:ended
     // event is handled only by chat_provider (for the call bubble)
     final socket = ref.read(socketServiceProvider).socket;
@@ -262,6 +296,7 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
   @override
   void dispose() {
     _noAnswerTimer?.cancel();
+    _peerReconnectTimer?.cancel();
     final socket = ref.read(socketServiceProvider).socket;
     socket?.off('call:rejected', _rejectedHandler);
     socket?.off('call:ended',    _endedHandler);
@@ -306,7 +341,7 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
         : !_joined
             ? 'Ringing…'
             : _remoteUids.isEmpty
-                ? 'Waiting for answer…'
+                ? (_peerReconnecting ? 'Reconnecting…' : 'Waiting for answer…')
                 : 'Connected';
 
     return Scaffold(
@@ -394,7 +429,10 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
             child: Text(initials, style: const TextStyle(fontSize: 36, color: Colors.white, fontWeight: FontWeight.w700)),
           ),
           const SizedBox(height: 16),
-          const Text('Waiting for the other party…', style: TextStyle(color: Colors.white70)),
+          Text(
+            _peerReconnecting ? 'Reconnecting…' : 'Waiting for the other party…',
+            style: const TextStyle(color: Colors.white70),
+          ),
         ]),
       );
     }

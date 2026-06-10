@@ -7,6 +7,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:jerry_app/core/auth/session_bridge.dart';
 import 'package:jerry_app/core/call/callkit_service.dart';
 import 'package:jerry_app/core/network/api_client.dart';
+import 'package:jerry_app/core/notifications/notification_service.dart';
 import 'package:jerry_app/core/theme/app_colors.dart';
 import 'package:jerry_app/features/call/video_call_screen.dart';
 import 'package:jerry_app/features/chat/chats_list_screen.dart';
@@ -37,9 +38,18 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
 
   bool get _isDarkTab => _index == 0 && !_showDirectory;
 
+  // The consultation currently ringing via the in-app overlay, and its
+  // route — kept so call:ended / call:rejected / call:cancelled can pop the
+  // overlay when the caller hangs up before we answer. Previously nothing
+  // dismissed it: the phone kept "ringing" a dead call and accepting it
+  // failed with a Conflict error.
+  String? _ringingCallId;
+  Route<void>? _ringRoute;
+
   @override
   void initState() {
     super.initState();
+    NotificationService.onCallCancelled = _dismissIncomingRing;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _connectSocket();
       _registerCallKit();
@@ -48,7 +58,13 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
 
   @override
   void dispose() {
-    ref.read(socketServiceProvider).socket?.off('call:incoming');
+    if (NotificationService.onCallCancelled == _dismissIncomingRing) {
+      NotificationService.onCallCancelled = null;
+    }
+    final sock = ref.read(socketServiceProvider).socket;
+    sock?.off('call:incoming');
+    sock?.off('call:ended',    _onCallTornDown);
+    sock?.off('call:rejected', _onCallTornDown);
     super.dispose();
   }
 
@@ -61,6 +77,29 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
       if (!mounted) return;
       _onIncomingCall(Map<String, dynamic>.from(data as Map));
     });
+    // Caller cancelled / call answered elsewhere while we were still ringing.
+    sock.on('call:ended',    _onCallTornDown);
+    sock.on('call:rejected', _onCallTornDown);
+  }
+
+  void _onCallTornDown(dynamic raw) {
+    if (raw is! Map) return;
+    final id = raw['consultationId'] as String? ?? '';
+    if (id.isNotEmpty) _dismissIncomingRing(id);
+  }
+
+  /// Tears down the ringing UI (in-app overlay + native CallKit notification)
+  /// for [consultationId] if it is the one currently ringing.
+  void _dismissIncomingRing(String consultationId) {
+    CallKitService.instance.endCall(consultationId);
+    CallKitService.instance.clearRinging(consultationId);
+    if (_ringingCallId != consultationId) return;
+    _ringingCallId = null;
+    final route = _ringRoute;
+    _ringRoute = null;
+    if (route != null && route.isActive && mounted) {
+      Navigator.of(context).removeRoute(route);
+    }
   }
 
   void _registerCallKit() {
@@ -86,6 +125,7 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
           break;
         case Event.actionCallDecline:
         case Event.actionCallTimeout:
+          CallKitService.instance.clearRinging(consultationId);
           try {
             await ref.read(apiClientProvider).post('/call/$consultationId/reject');
           } catch (_) {}
@@ -94,7 +134,37 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
           break;
       }
     });
+
+    _resumePendingCallKitAccept();
   }
+
+  /// Cold-start path: the user tapped Accept on the native ring while the
+  /// app was killed. By the time this shell mounts and attaches the CallKit
+  /// listener, that accept event is long gone — the app would just open to
+  /// the home screen and the call dies. Recover it from the plugin's
+  /// active-calls list instead.
+  Future<void> _resumePendingCallKitAccept() async {
+    final pending = await CallKitService.instance.pendingAcceptedCalls();
+    if (!mounted || pending.isEmpty) return;
+    final call  = pending.first;
+    final extra = Map<String, dynamic>.from((call['extra'] as Map?) ?? {});
+    final id    = (call['id'] ?? '').toString();
+    if (id.isEmpty) return;
+    await _onCallKitAccept(
+      consultationId: id,
+      callerId:       (extra['callerId'] ?? '').toString(),
+      callerRole:     (extra['callerRole'] ?? 'LAWYER').toString(),
+      callerName:     (call['nameCaller'] ?? 'Lawyer').toString(),
+      callType:       (extra['callType'] ?? 'VIDEO').toString(),
+      channelName:    (extra['channelName'] ?? '').toString(),
+      token:          (extra['token'] ?? '').toString(),
+      uid:            int.tryParse((extra['uid'] ?? '0').toString()) ?? 0,
+    );
+  }
+
+  /// Guards against the same accept being processed twice (live event +
+  /// cold-start recovery racing each other).
+  final Set<String> _handledAccepts = {};
 
   Future<void> _onCallKitAccept({
     required String consultationId,
@@ -106,6 +176,11 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
     required String token,
     required int    uid,
   }) async {
+    if (!_handledAccepts.add(consultationId)) return;
+    _ringingCallId = null;
+    _ringRoute = null;
+    CallKitService.instance.clearRinging(consultationId);
+
     // Dismiss the CallKit native UI immediately. Without this, after the user
     // taps Accept, the native "Ongoing call" notification stays in the
     // foreground and our in-app VideoCallScreen never becomes visible — the
@@ -143,6 +218,8 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
         ),
       );
     } catch (e) {
+      // Allow a retry if the accept failed for a transient reason.
+      _handledAccepts.remove(consultationId);
       // Dismiss the CallKit notification so the user isn't left staring at it.
       await CallKitService.instance.endCall(consultationId);
       if (!mounted) return;
@@ -154,6 +231,12 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
   Future<void> _onIncomingCall(Map<String, dynamic> data) async {
     if (!mounted) return;
     final consultationId = data['consultationId'] as String;
+
+    // The FCM data push delivers this same call to NotificationService, which
+    // shows the native CallKit ring. If that path won the race, don't stack
+    // the in-app overlay on top — two ringing UIs at once.
+    if (!CallKitService.instance.tryBeginRinging(consultationId)) return;
+
     final callerId       = data['callerId']       as String? ?? '';
     final callerRole     = data['callerRole']     as String? ?? 'LAWYER';
     final callType       = data['type']           as String? ?? 'VIDEO';
@@ -179,35 +262,49 @@ class _UserShellScreenState extends ConsumerState<UserShellScreen> {
       ref.read(chatProvider.notifier).trackCall(consultationId, threadId, callType);
     }
 
-    await Navigator.of(context).push<void>(
-      PageRouteBuilder(
-        opaque: false,
-        barrierColor: Colors.transparent,
-        pageBuilder: (ctx, anim, secAnim) => IncomingCallOverlay(
-          callerName: callerName,
-          callType:   callType,
-          onReject: () async {
-            Navigator.of(ctx).pop();
-            try {
-              await ref.read(apiClientProvider).post('/call/$consultationId/reject');
-            } catch (_) {}
-          },
-          onAccept: () async {
-            Navigator.of(ctx).pop();
-            await _onCallKitAccept(
-              consultationId: consultationId,
-              callerId:       callerId,
-              callerRole:     callerRole,
-              callerName:     callerName,
-              callType:       callType,
-              channelName:    channelName,
-              token:          agoraToken,
-              uid:            uid,
-            );
-          },
-        ),
+    final route = PageRouteBuilder<void>(
+      opaque: false,
+      barrierColor: Colors.transparent,
+      pageBuilder: (ctx, anim, secAnim) => IncomingCallOverlay(
+        callerName: callerName,
+        callType:   callType,
+        onReject: () async {
+          _ringingCallId = null;
+          _ringRoute = null;
+          Navigator.of(ctx).pop();
+          // Also tear down the parallel native CallKit notification — it
+          // rings independently and would keep ringing after the decline.
+          CallKitService.instance.endCall(consultationId);
+          CallKitService.instance.clearRinging(consultationId);
+          try {
+            await ref.read(apiClientProvider).post('/call/$consultationId/reject');
+          } catch (_) {}
+        },
+        onAccept: () async {
+          _ringingCallId = null;
+          _ringRoute = null;
+          Navigator.of(ctx).pop();
+          await _onCallKitAccept(
+            consultationId: consultationId,
+            callerId:       callerId,
+            callerRole:     callerRole,
+            callerName:     callerName,
+            callType:       callType,
+            channelName:    channelName,
+            token:          agoraToken,
+            uid:            uid,
+          );
+        },
       ),
     );
+    _ringingCallId = consultationId;
+    _ringRoute = route;
+    await Navigator.of(context).push<void>(route);
+    // Route popped by any path (accept, decline, external dismissal).
+    if (_ringRoute == route) {
+      _ringRoute = null;
+      _ringingCallId = null;
+    }
   }
 
   void _openDirectory() {

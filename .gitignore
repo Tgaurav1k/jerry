@@ -8,3 +8,6 @@ dist/
 # Firebase service-account credentials — never commit
 *firebase-adminsdk*.json
 backend/secrets/
+
+# Helper file with single-line FCM key — local copy only
+_FCM_PRIVATE_KEY_for_render.txt
