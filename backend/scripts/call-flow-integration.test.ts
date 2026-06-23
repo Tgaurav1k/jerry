@@ -126,6 +126,24 @@ async function registerFakeFcm(s: Session, label: string) {
   return resp.status === 200 || resp.status === 201;
 }
 
+/**
+ * Fetch the persisted "call record" chat bubble for a consultation. The backend
+ * stores it with a deterministic id of `call-<consultationId>` in the thread
+ * shared by the two participants. Returns null if it hasn't been written yet.
+ */
+async function getCallRecord(
+  s: Session,
+  userId: string,
+  lawyerId: string,
+  consultationId: string,
+): Promise<{ callStatus?: string; callDurationSeconds?: number; type?: string; callType?: string } | null> {
+  const threadId = [userId, lawyerId].sort().join(':');
+  const resp = await s.api.get('/chat/history', { params: { threadId, limit: 100 } });
+  const list = resp.data?.data ?? resp.data ?? [];
+  if (!Array.isArray(list)) return null;
+  return list.find((m: any) => m.id === `call-${consultationId}`) ?? null;
+}
+
 async function main() {
   console.log(COLOR.cyan('Jerry — call flow integration test'));
   console.log(COLOR.gray(`Target: ${API}\n`));
@@ -320,9 +338,51 @@ async function main() {
       assert(got.senderId === gaurav.id && got.senderRole === 'USER', 'chat senderId/Role correct');
     }
 
-    // ─── (Optional) Scenario 8: ring timeout fires after 45s ─────────────────
+    // ─── Scenario 8: persisted call records (regression for the duration bug) ──
+    // Bug #1 fix: a call ended while still RINGING (caller cancels before
+    // pickup) must be logged as MISSED with 0s duration — NOT as a completed
+    // N-second call. A call that was actually answered must be COMPLETED.
+    section('Scenario 8: call history records — cancelled→missed, answered→completed');
+    {
+      // 8a — cancel while ringing
+      const t0 = Date.now();
+      const initA = await gaurav.api.post('/call/initiate', {
+        recipientId: jerry.id, recipientRole: 'LAWYER', type: 'VOICE',
+      });
+      const cidA = initA.data?.data?.consultationId as string;
+      await waitForEvent(jerry, 'call:incoming', t0);
+      await gaurav.api.post(`/call/${cidA}/end`);   // hang up BEFORE jerry answers
+      await delay(500);                              // let saveCallRecord persist
+      const recA = await getCallRecord(gaurav, gaurav.id, jerry.id, cidA);
+      assert(!!recA, 'cancelled call produced a persisted call record');
+      assert(recA?.callStatus === 'missed',
+        `cancelled-while-ringing recorded as 'missed' (was: ${recA?.callStatus})`);
+      assert((recA?.callDurationSeconds ?? -1) === 0,
+        `cancelled call has 0s duration (was: ${recA?.callDurationSeconds}s)`);
+
+      // 8b — answered, then ended a moment later
+      const t1 = Date.now();
+      const initB = await gaurav.api.post('/call/initiate', {
+        recipientId: jerry.id, recipientRole: 'LAWYER', type: 'VIDEO',
+      });
+      const cidB = initB.data?.data?.consultationId as string;
+      await waitForEvent(jerry, 'call:incoming', t1);
+      await jerry.api.post(`/call/${cidB}/accept`);
+      await delay(1200);                             // ~1s of talk time
+      const tEnd = Date.now();
+      await jerry.api.post(`/call/${cidB}/end`);
+      await waitForEvent(gaurav, 'call:ended', tEnd);
+      await delay(500);
+      const recB = await getCallRecord(gaurav, gaurav.id, jerry.id, cidB);
+      assert(recB?.callStatus === 'completed',
+        `answered call recorded as 'completed' (was: ${recB?.callStatus})`);
+      assert((recB?.callDurationSeconds ?? 0) >= 1,
+        `completed call has a real (>=1s) duration (was: ${recB?.callDurationSeconds}s)`);
+    }
+
+    // ─── (Optional) Scenario 9: ring timeout fires after 45s ─────────────────
     if (process.env.TEST_TIMEOUT === '1') {
-      section('Scenario 8: ring timeout (slow — 50s wait)');
+      section('Scenario 9: ring timeout (slow — 50s wait)');
       const t0 = Date.now();
       const initResp = await gaurav.api.post('/call/initiate', {
         recipientId: jerry.id, recipientRole: 'LAWYER', type: 'VIDEO',
@@ -334,7 +394,7 @@ async function main() {
       const endedG = await waitForEvent(gaurav, 'call:ended', t0, 10_000);
       assert(endedG.reason === 'no_answer', `gaurav gets call:ended with reason=no_answer (was: ${endedG.reason})`);
     } else {
-      section('Scenario 8: ring timeout (skipped — set TEST_TIMEOUT=1 to include)');
+      section('Scenario 9: ring timeout (skipped — set TEST_TIMEOUT=1 to include)');
     }
 
   } catch (e: any) {

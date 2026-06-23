@@ -451,9 +451,15 @@ export class CallService {
       : null;
 
     const ended = new Date();
-    const started = c.startedAt;
-    const durationSeconds = started
-      ? Math.max(0, Math.floor((ended.getTime() - started.getTime()) / 1000))
+    // Only count real talk-time if the call was actually answered (ACTIVE).
+    // `startedAt` defaults to row-creation time (set while RINGING), and accept()
+    // resets it to the pickup moment. So for a call that ends while still
+    // RINGING (caller cancelled before pickup) `startedAt` is the creation time —
+    // computing a duration from it would wrongly log a cancelled call as a
+    // completed N-second call. In that case duration is 0 → recorded as missed.
+    const wasActive = c.status === ConsultationStatus.ACTIVE;
+    const durationSeconds = wasActive && c.startedAt
+      ? Math.max(0, Math.floor((ended.getTime() - c.startedAt.getTime()) / 1000))
       : 0;
 
     await this.prisma.consultation.update({

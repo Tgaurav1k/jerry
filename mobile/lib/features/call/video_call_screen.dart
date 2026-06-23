@@ -45,6 +45,13 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
   bool _muted   = false;
   String? _error;
 
+  // True once we've already told the backend the call is over (via any exit
+  // path). Guards dispose() from posting a second /end and, crucially, makes
+  // the Android system Back button / swipe-back end the call too — previously
+  // backing out only tore down Agora locally, leaving the consultation
+  // RINGING/ACTIVE and the lawyer-busy lock held for up to 65 minutes.
+  bool _ended = false;
+
   // Client-side safety net only. The server owns the authoritative ring
   // timeout (45s) and fires call:ended with reason: 'no_answer'. We wait a
   // bit longer here so the server's MISSED-call recording wins the race if
@@ -132,6 +139,14 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
     engine.registerEventHandler(
       RtcEngineEventHandler(
         onJoinChannelSuccess: (_, _) {
+          // Re-assert speakerphone for voice calls. Setting it before
+          // joinChannel doesn't reliably stick on some Agora/Android builds —
+          // the audio route is only locked in once we're actually in the
+          // channel, so without this voice calls can come out the quiet
+          // earpiece instead of the loudspeaker.
+          if (_isVoice) {
+            engine.setEnableSpeakerphone(true);
+          }
           if (mounted) setState(() => _joined = true);
         },
         onUserJoined: (_, remoteUid, _) {
@@ -220,6 +235,7 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
   Future<void> _onNoAnswer() async {
     if (!mounted || _remoteUids.isNotEmpty) return;
     // Same teardown path as hang-up, but surfaces a "No answer" message.
+    _ended = true;
     final socket = ref.read(socketServiceProvider).socket;
     socket?.off('call:rejected', _rejectedHandler);
     socket?.off('call:ended',    _endedHandler);
@@ -244,6 +260,7 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
   void _onRemoteEnd(String? message) {
     if (!mounted || _ending) return;
     _ending = true;
+    _ended  = true;
     _noAnswerTimer?.cancel();
     _noAnswerTimer = null;
     _peerReconnectTimer?.cancel();
@@ -269,6 +286,7 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
   }
 
   Future<void> _hangUp() async {
+    _ended = true;
     _noAnswerTimer?.cancel();
     _noAnswerTimer = null;
     _peerReconnectTimer?.cancel();
@@ -300,6 +318,16 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
     final socket = ref.read(socketServiceProvider).socket;
     socket?.off('call:rejected', _rejectedHandler);
     socket?.off('call:ended',    _endedHandler);
+    // If the screen is being torn down by the system Back button / swipe-back
+    // (no hang-up button, no remote end), none of the explicit teardown paths
+    // ran — so the backend still thinks the call is live. Fire-and-forget /end
+    // so the consultation is marked ENDED and the lawyer-busy lock is freed.
+    // /end is idempotent, so this is safe even if it races a normal teardown.
+    if (!_ended) {
+      ref.read(apiClientProvider)
+          .post('/call/${widget.args.consultationId}/end')
+          .catchError((_) => null);
+    }
     _engine?.leaveChannel();
     _engine?.release();
     super.dispose();

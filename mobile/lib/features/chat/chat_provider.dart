@@ -228,6 +228,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
       callType:        callInfo['callType']!,
       status:          duration > 0 ? 'completed' : 'missed',
       durationSeconds: duration,
+      consultationId:  consultationId,
     );
   }
 
@@ -241,11 +242,22 @@ class ChatNotifier extends StateNotifier<ChatState> {
       callType:        callInfo['callType']!,
       status:          'declined',
       durationSeconds: 0,
+      consultationId:  consultationId,
     );
   }
 
-  void addMissedCallBubble({required String threadId, required String callType}) {
-    _addCallBubble(threadId: threadId, callType: callType, status: 'missed', durationSeconds: 0);
+  void addMissedCallBubble({
+    required String threadId,
+    required String callType,
+    String? consultationId,
+  }) {
+    _addCallBubble(
+      threadId: threadId,
+      callType: callType,
+      status: 'missed',
+      durationSeconds: 0,
+      consultationId: consultationId,
+    );
   }
 
   void _addCallBubble({
@@ -253,12 +265,23 @@ class ChatNotifier extends StateNotifier<ChatState> {
     required String callType,
     required String status,
     required int    durationSeconds,
+    String? consultationId,
   }) {
     final threads = Map<String, ChatThread>.from(state.threads);
     final thread  = threads[threadId];
     if (thread == null) return;
+    // Use the consultation id as the bubble id when we have it so this live
+    // bubble matches the row the backend persists (`call-<consultationId>`).
+    // loadHistory() dedups by id, so without this the same call shows twice
+    // after the thread is reopened (live `call-<timestamp>` + history
+    // `call-<consultationId>`).
+    final msgId = consultationId != null
+        ? 'call-$consultationId'
+        : 'call-${DateTime.now().microsecondsSinceEpoch}';
+    // Idempotency guard: never add the same call bubble twice.
+    if (thread.messages.any((m) => m.id == msgId)) return;
     final msg = ChatMessage(
-      id:                  'call-${DateTime.now().microsecondsSinceEpoch}',
+      id:                  msgId,
       threadId:            threadId,
       senderId:            _myId ?? '',
       senderRole:          thread.peerRole == 'LAWYER' ? 'USER' : 'LAWYER',

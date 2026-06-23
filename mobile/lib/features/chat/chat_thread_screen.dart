@@ -258,6 +258,7 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
         ref.read(chatProvider.notifier).addMissedCallBubble(
           threadId: _threadId,
           callType: type,
+          consultationId: consultationId,
         );
         final reason = (data['reason'] as String?) ?? 'busy';
         final msg = reason == 'busy'
