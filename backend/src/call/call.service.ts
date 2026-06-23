@@ -442,6 +442,25 @@ export class CallService {
     // before the timer fires (e.g. caller cancels mid-ring).
     this._clearRingTimeout(consultationId);
 
+    // Terminal-state guard / idempotency. If the call already reached a final
+    // state, do NOT overwrite it. The caller's VideoCallScreen fires /end on
+    // teardown even after a reject or no-answer; without this guard that would
+    // flip REJECTED_BY_LAWYER / MISSED → ENDED, which then made the client pop
+    // the post-call rating modal for calls that were never actually completed.
+    // It also makes a normal double-/end from both parties a safe no-op.
+    if (
+      c.status === ConsultationStatus.ENDED ||
+      c.status === ConsultationStatus.MISSED ||
+      c.status === ConsultationStatus.REJECTED_BY_LAWYER ||
+      c.status === ConsultationStatus.DROPPED
+    ) {
+      return {
+        success: true,
+        data: { consultationId, durationSeconds: c.durationSeconds ?? 0 },
+        meta: { timestamp: new Date().toISOString() },
+      };
+    }
+
     // If the caller cancelled while still RINGING, the recipient's device is
     // mid-ring (CallKit / overlay) and must be told to stop. Capture state +
     // initiator before we overwrite/delete them below.

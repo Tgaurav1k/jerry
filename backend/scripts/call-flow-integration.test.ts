@@ -281,6 +281,16 @@ async function main() {
       assert(rejResp.status === 200 || rejResp.status === 201, `jerry POST /reject -> ${rejResp.status}`);
       const rejectedG = await waitForEvent(gaurav, 'call:rejected', tReject);
       assert(rejectedG.consultationId === consultationId, 'gaurav receives call:rejected');
+
+      // Regression: the caller's VideoCallScreen fires /end on teardown after a
+      // reject. That must NOT flip the consultation to ENDED — otherwise the
+      // client wrongly pops the post-call rating modal for a declined call.
+      await gaurav.api.post(`/call/${consultationId}/end`);
+      await delay(300);
+      const detail = await gaurav.api.get(`/consultations/${consultationId}`);
+      const status = detail.data?.data?.status;
+      assert(status === 'REJECTED_BY_LAWYER',
+        `rejected call stays REJECTED after caller's /end (was: ${status})`);
     }
 
     // ─── Scenario 5: same-role call is forbidden ─────────────────────────────
