@@ -178,6 +178,11 @@ class ChatNotifier extends StateNotifier<ChatState> {
       final list = resp is List ? resp : (resp['data'] as List<dynamic>? ?? []);
       if (list.isEmpty) return;
 
+      // The provider can be disposed (ref.invalidate on sign-in) while this
+      // fetch is in flight; setting state afterwards throws "used after
+      // dispose". Bail if we're gone.
+      if (!mounted) return;
+
       final threads = Map<String, ChatThread>.from(state.threads);
       for (final raw in list) {
         final m            = raw as Map<String, dynamic>;
@@ -304,11 +309,20 @@ class ChatNotifier extends StateNotifier<ChatState> {
   /// We invoke it after successfully integrating the message so the backend
   /// only deletes the PendingMessage row on confirmed receipt.
   void _onMessage(dynamic raw, [dynamic ack]) {
+    if (!mounted) return;
     final data = Map<String, dynamic>.from(raw as Map);
     final msg  = ChatMessage.fromMap(data);
     final isMe = msg.senderId == _myId;
     final peerId   = isMe ? msg.recipientId   : msg.senderId;
     final peerRole = isMe ? msg.recipientRole : msg.senderRole;
+
+    // The backend echoes our own sends back with `messageId` set to the local
+    // id we generated in sendMessage(). Reconciling by that id is exact;
+    // the old content-only match broke when the same text was sent twice
+    // ("ok","ok") — the echo could replace the wrong optimistic bubble,
+    // leaving a duplicate or a stuck "sending" row. Content match is kept
+    // only as a last-resort fallback for echoes without a messageId.
+    final echoedLocalId = data['messageId'] as String?;
 
     final threads = Map<String, ChatThread>.from(state.threads);
     final thread  = threads[msg.threadId] ?? ChatThread(
@@ -318,8 +332,10 @@ class ChatNotifier extends StateNotifier<ChatState> {
     );
 
     final msgs = List<ChatMessage>.from(thread.messages);
-    // replace optimistic if same localId came back
-    final idx = msgs.indexWhere((m) => m.id == msg.id || (m.isLocal && m.content == msg.content && isMe));
+    final idx = msgs.indexWhere((m) =>
+        m.id == msg.id ||
+        (echoedLocalId != null && m.id == echoedLocalId) ||
+        (m.isLocal && isMe && m.content == msg.content));
     if (idx != -1) {
       msgs[idx] = msg;
     } else {
@@ -520,6 +536,9 @@ class ChatNotifier extends StateNotifier<ChatState> {
   }
 
   void _markStatus(String threadId, String messageId, String status) {
+    // Called after the send POST resolves, which can land after the provider
+    // was disposed — guard the state write.
+    if (!mounted) return;
     final threads = Map<String, ChatThread>.from(state.threads);
     final thread  = threads[threadId];
     if (thread == null) return;
@@ -565,6 +584,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
       final list = resp is List ? resp : (resp['data'] as List<dynamic>? ?? []);
       final msgs = list.map((e) => ChatMessage.fromMap(e as Map<String, dynamic>)).toList();
       if (msgs.isEmpty) return;
+      // Disposed mid-fetch (sign-in invalidated the provider) → don't touch state.
+      if (!mounted) return;
       final threads = Map<String, ChatThread>.from(state.threads);
       final thread  = threads[threadId];
       if (thread == null) return;
