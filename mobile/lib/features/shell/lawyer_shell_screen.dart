@@ -236,7 +236,11 @@ class _LawyerShellScreenState extends ConsumerState<LawyerShellScreen> {
   Future<void> _onIncomingCall(Map<String, dynamic> data) async {
     if (!mounted) return;
 
-    final consultationId = data['consultationId'] as String;
+    // Soft-cast: a malformed call:incoming payload (missing/null id) must not
+    // throw inside the socket listener — an uncaught error here killed the
+    // whole incoming-call flow so the phone never rang.
+    final consultationId = data['consultationId'] as String? ?? '';
+    if (consultationId.isEmpty) return;
 
     // The FCM data push delivers this same call to NotificationService, which
     // shows the native CallKit ring. If that path won the race, don't stack

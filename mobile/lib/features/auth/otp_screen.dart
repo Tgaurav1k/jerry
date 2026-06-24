@@ -76,9 +76,18 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
 
   String get _otp => _controllers.map((c) => c.text).join();
 
+  // Guards the paste branch: writing to each controller's .text below fires
+  // its own onChanged → _onDigitChanged reentrantly, causing a setState storm
+  // and stray focus jumps. We ignore those nested calls while the paste is
+  // being applied.
+  bool _applyingPaste = false;
+
   void _onDigitChanged(int index, String value) {
+    if (_applyingPaste) return;
     if (value.length == 6 && RegExp(r'^\d{6}$').hasMatch(value)) {
+      _applyingPaste = true;
       for (int i = 0; i < 6; i++) { _controllers[i].text = value[i]; }
+      _applyingPaste = false;
       _focusNodes[5].requestFocus();
       setState(() {});
       return;

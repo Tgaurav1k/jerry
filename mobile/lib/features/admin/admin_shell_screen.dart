@@ -121,7 +121,8 @@ class _PendingQueueTabState extends ConsumerState<_PendingQueueTab> {
     setState(() => _loading = true);
     try {
       final resp = await ref.read(apiClientProvider).get('/admin/queue');
-      final list = (resp['data']['items'] as List<dynamic>? ?? []);
+      final data = resp is Map ? resp['data'] as Map<String, dynamic>? : null;
+      final list = (data?['items'] as List<dynamic>? ?? []);
       if (mounted) setState(() {
         _items = list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
         _loading = false;
@@ -178,7 +179,8 @@ class _PendingLawyerCardState extends ConsumerState<_PendingLawyerCard> {
   }
 
   Future<void> _loadLicenseBytes() async {
-    final lawyerId = widget.data['id'] as String;
+    final lawyerId = widget.data['id'] as String? ?? '';
+    if (lawyerId.isEmpty) return;
     try {
       final dioResp = await ref.read(apiClientProvider).dio.get(
         '/license/$lawyerId/stream',
@@ -220,7 +222,7 @@ class _PendingLawyerCardState extends ConsumerState<_PendingLawyerCard> {
   Future<void> _approve() async {
     setState(() => _acting = true);
     try {
-      final lawyerId = widget.data['id'] as String;
+      final lawyerId = widget.data['id'] as String? ?? '';
       await ref.read(apiClientProvider).post('/admin/lawyers/$lawyerId/approve');
       widget.onDecision();
     } catch (e) {
@@ -235,7 +237,7 @@ class _PendingLawyerCardState extends ConsumerState<_PendingLawyerCard> {
     if (reason == null || reason.trim().isEmpty) return;
     setState(() => _acting = true);
     try {
-      final lawyerId = widget.data['id'] as String;
+      final lawyerId = widget.data['id'] as String? ?? '';
       await ref.read(apiClientProvider).post(
         '/admin/lawyers/$lawyerId/reject',
         data: {'reason': reason.trim()},
@@ -416,7 +418,8 @@ class _UsersTabState extends ConsumerState<_UsersTab> {
     setState(() => _loading = true);
     try {
       final resp = await ref.read(apiClientProvider).get('/admin/users');
-      final list = (resp['data']['items'] as List<dynamic>? ?? []);
+      final data = resp is Map ? resp['data'] as Map<String, dynamic>? : null;
+      final list = (data?['items'] as List<dynamic>? ?? []);
       if (mounted) setState(() {
         _users = list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
         _loading = false;
@@ -432,7 +435,8 @@ class _UsersTabState extends ConsumerState<_UsersTab> {
       final reason = await _askReason(context);
       if (reason == null) return;
     }
-    final userId = user['id'] as String;
+    final userId = user['id'] as String? ?? '';
+    if (userId.isEmpty) return;
     final api    = ref.read(apiClientProvider);
     try {
       if (isSuspended) {
@@ -485,7 +489,8 @@ class _LawyersTabState extends ConsumerState<_LawyersTab> {
     setState(() => _loading = true);
     try {
       final resp = await ref.read(apiClientProvider).get('/admin/lawyers');
-      final list = (resp['data']['items'] as List<dynamic>? ?? []);
+      final data = resp is Map ? resp['data'] as Map<String, dynamic>? : null;
+      final list = (data?['items'] as List<dynamic>? ?? []);
       if (mounted) setState(() {
         _lawyers = list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
         _loading = false;
@@ -534,7 +539,8 @@ class _ActivityTabState extends ConsumerState<_ActivityTab> {
     setState(() => _loading = true);
     try {
       final resp = await ref.read(apiClientProvider).get('/admin/audit');
-      final list = (resp['data']['items'] as List<dynamic>? ?? []);
+      final data = resp is Map ? resp['data'] as Map<String, dynamic>? : null;
+      final list = (data?['items'] as List<dynamic>? ?? []);
       if (mounted) setState(() {
         _logs = list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
         _loading = false;

@@ -30,6 +30,19 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
   /// the splash bailing first.
   static const Duration _maxSplash = Duration(seconds: 35);
 
+  /// One-shot routing latch. The _maxSplash timeout and the in-flight
+  /// _navigate() race each other; on a slow network the timeout could fire
+  /// Welcome while _navigate later resolved and navigated a SECOND time,
+  /// landing the user on the wrong screen. The first caller wins; the rest
+  /// are no-ops.
+  bool _routed = false;
+
+  void _go(String path, {Object? extra}) {
+    if (_routed || !mounted) return;
+    _routed = true;
+    context.go(path, extra: extra);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -39,7 +52,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
       if (!mounted) return;
       // Race _navigate against a fallback to Welcome. Whichever wins, route.
       await _navigate().timeout(_maxSplash, onTimeout: () {
-        if (mounted) context.go(WelcomeScreen.routePath);
+        _go(WelcomeScreen.routePath);
       });
     });
   }
@@ -77,14 +90,14 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
     final role  = session.role;
 
     if (token == null || token.isEmpty || role == null) {
-      if (mounted) context.go(WelcomeScreen.routePath);
+      _go(WelcomeScreen.routePath);
       return;
     }
 
     _registerFcm();
 
     if (role == 'ADMIN') {
-      if (mounted) context.go(AdminShellScreen.routePath);
+      _go(AdminShellScreen.routePath);
       return;
     }
 
@@ -103,11 +116,11 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
 
         if (!mounted) return;
         if (status == 'APPROVED') {
-          context.go(LawyerShellScreen.routePath);
+          _go(LawyerShellScreen.routePath);
         } else if (status == 'PENDING_UPLOAD') {
-          context.go(LicenseUploadScreen.routePath);
+          _go(LicenseUploadScreen.routePath);
         } else {
-          context.go(UnderReviewScreen.routePath, extra: status);
+          _go(UnderReviewScreen.routePath, extra: status);
         }
       } on DioException catch (e) {
         // 401 = expired/invalid token → clear session, force re-login.
@@ -118,12 +131,12 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
         if (e.response?.statusCode == 401) {
           try { await ref.read(tokenStorageProvider).clear(); } catch (_) {}
         }
-        if (mounted) context.go(WelcomeScreen.routePath);
+        _go(WelcomeScreen.routePath);
       } catch (_) {
-        if (mounted) context.go(WelcomeScreen.routePath);
+        _go(WelcomeScreen.routePath);
       }
     } else {
-      if (mounted) context.go(UserShellScreen.routePath);
+      _go(UserShellScreen.routePath);
     }
   }
 

@@ -192,7 +192,14 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
         // so calls longer than 1 hour don't get force-disconnected.
         onTokenPrivilegeWillExpire: (_, _) => _refreshAgoraToken(),
         onError: (code, msg) {
-          if (mounted) setState(() => _error = 'Agora error $code: $msg');
+          // Only surface errors that stop the call from ever connecting.
+          // Once we've joined the channel Agora still emits recoverable
+          // errors (transient token warnings, network blips); blanket-failing
+          // on those replaced a perfectly healthy live call with a dead-end
+          // error screen, ejecting the user mid-conversation.
+          if (!_joined && mounted) {
+            setState(() => _error = 'Agora error $code: $msg');
+          }
         },
       ),
     );
@@ -233,8 +240,13 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
   }
 
   Future<void> _onNoAnswer() async {
-    if (!mounted || _remoteUids.isNotEmpty) return;
+    if (!mounted || _remoteUids.isNotEmpty || _ending) return;
     // Same teardown path as hang-up, but surfaces a "No answer" message.
+    // _ending claims the single teardown so a racing _onRemoteEnd (a late
+    // call:ended socket event or Agora onUserOffline arriving during the
+    // awaits below) can't also pop — a double-pop would close the chat
+    // screen underneath and fire two contradictory snackbars.
+    _ending = true;
     _ended = true;
     final socket = ref.read(socketServiceProvider).socket;
     socket?.off('call:rejected', _rejectedHandler);
@@ -251,10 +263,11 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
     messenger?.showSnackBar(const SnackBar(content: Text('No answer.')));
   }
 
-  /// Re-entrancy guard — _onRemoteEnd can be triggered from multiple
-  /// sources concurrently (call:ended socket event, call:rejected,
-  /// Agora's onUserOffline). Without this guard the second invocation
-  /// would try to pop a screen that's already gone.
+  /// Single-teardown guard shared by ALL exit paths (_onRemoteEnd,
+  /// _hangUp, _onNoAnswer). Any of them can be triggered concurrently
+  /// (call:ended / call:rejected socket events, Agora's onUserOffline,
+  /// the hang-up button, the no-answer timer). The first to claim it tears
+  /// the call down; the rest bail, so the screen is only ever popped once.
   bool _ending = false;
 
   void _onRemoteEnd(String? message) {
@@ -286,6 +299,12 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> {
   }
 
   Future<void> _hangUp() async {
+    // Claim the single teardown. If the peer hangs up at the same instant,
+    // Agora's onUserOffline → _onRemoteEnd would otherwise run during the
+    // awaits below and pop a second time, throwing the user past the chat
+    // screen and corrupting the post-call rating flow.
+    if (_ending) return;
+    _ending = true;
     _ended = true;
     _noAnswerTimer?.cancel();
     _noAnswerTimer = null;

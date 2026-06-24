@@ -82,6 +82,7 @@ class _LawyerDetailScreenState extends ConsumerState<LawyerDetailScreen> {
         ref.read(chatProvider.notifier).addMissedCallBubble(
           threadId: threadId,
           callType: 'VIDEO',
+          consultationId: consultationId,
         );
         final reason = (data['reason'] as String?) ?? 'busy';
         final msg = reason == 'busy'

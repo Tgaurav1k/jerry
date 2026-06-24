@@ -105,7 +105,19 @@ class ApiClient {
     ));
   }
 
-  Future<bool> _tryRefresh() async {
+  // Serializes concurrent refreshes. When several requests get a 401 at the
+  // same instant (shell availability + socket connect + chat load all fire on
+  // login), each would otherwise POST /auth/refresh in parallel. If the backend
+  // rotates refresh tokens, the first wins and the rest fail with an
+  // already-used token → the user is wrongly logged out mid-session. Holding a
+  // single in-flight future means the followers await the one refresh instead.
+  Future<bool>? _refreshing;
+
+  Future<bool> _tryRefresh() {
+    return _refreshing ??= _doRefresh().whenComplete(() => _refreshing = null);
+  }
+
+  Future<bool> _doRefresh() async {
     final refresh = await _storage.getRefreshToken();
     final deviceId = await _storage.getDeviceId();
     if (refresh == null) return false;
@@ -117,12 +129,20 @@ class ApiClient {
           if (deviceId != null) 'deviceId': deviceId,
         },
       );
-      final data = resp.data['data'];
+      // Guard the casts: a malformed/error refresh response must fail soft
+      // (return false → caller logs out cleanly) rather than throwing.
+      final data = resp.data is Map ? resp.data['data'] : null;
+      final accessToken = data is Map ? data['accessToken'] as String? : null;
+      final refreshToken = data is Map ? data['refreshToken'] as String? : null;
+      if (accessToken == null || accessToken.isEmpty ||
+          refreshToken == null || refreshToken.isEmpty) {
+        return false;
+      }
       final role = await _storage.getRole();
       final userId = await _storage.getUserId();
       await _storage.saveTokens(
-        accessToken: data['accessToken'] as String,
-        refreshToken: data['refreshToken'] as String,
+        accessToken: accessToken,
+        refreshToken: refreshToken,
         role: role ?? '',
         userId: userId ?? '',
       );

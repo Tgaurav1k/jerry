@@ -44,15 +44,28 @@ Future<void> _onFcmBackgroundMessage(RemoteMessage message) async {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await dotenv.load(fileName: '.env');
 
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  // Startup init is wrapped so a single failure (a misconfigured device, a
+  // missing .env, a Firebase/notification channel error) can NEVER prevent
+  // runApp() from being reached — that would leave the user staring at a
+  // permanently blank/black screen with no way out. Each step fails soft and
+  // the app still launches; features that depend on the failed step degrade
+  // rather than taking the whole app down.
+  try {
+    await dotenv.load(fileName: '.env');
+  } catch (_) {}
 
-  // Register the background handler BEFORE runApp so FCM can find it
-  // even when the app is launched cold by an incoming-call push.
-  FirebaseMessaging.onBackgroundMessage(_onFcmBackgroundMessage);
+  try {
+    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
-  await NotificationService.init();
+    // Register the background handler BEFORE runApp so FCM can find it
+    // even when the app is launched cold by an incoming-call push.
+    FirebaseMessaging.onBackgroundMessage(_onFcmBackgroundMessage);
+  } catch (_) {}
+
+  try {
+    await NotificationService.init();
+  } catch (_) {}
 
   runApp(const ProviderScope(child: JerryApp()));
 }

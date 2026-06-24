@@ -201,6 +201,11 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
     // Load persisted message history from backend
     await ref.read(chatProvider.notifier).loadHistory(_threadId);
 
+    // The user can tap back out of the chat while history is still loading
+    // above; without this guard the setState below throws "called after
+    // dispose()" and crashes.
+    if (!mounted) return;
+
     // Initial presence pull + refresh every 30s while the screen is open.
     unawaited(_refreshPeerPresence());
     _presenceTimer = Timer.periodic(
@@ -339,6 +344,12 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen> {
       if (!mounted) return;
       context.push(LawyerDetailScreen.routePath, extra: lawyer);
     } catch (_) {
+      // Don't swallow silently — tapping the header would just spin and reset,
+      // making the profile look broken. Tell the user it failed.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Couldn't open profile. Try again.")));
+      }
     } finally {
       if (mounted) setState(() => _profileLoading = false);
     }
